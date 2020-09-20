@@ -10,12 +10,7 @@ extern "C" {
 #include <stdint.h>
 
 #define RENDERGRAPH_FEATURE_VULKAN
-#define RENDERGRAPH_FEATURE_SDL2
 #define RENDERGRAPH_FEATURE_VALIDATION
-
-#ifdef RENDERGRAPH_FEATURE_SDL2
-typedef struct SDL_Window SDL_Window;
-#endif // RENDERGRAPH_FEATURE_SDL2
 
 typedef struct RgDevice RgDevice;
 typedef struct RgPipeline RgPipeline;
@@ -29,6 +24,19 @@ typedef struct RgNode RgNode;
 typedef struct RgResource RgResource;
 typedef uint32_t RgFlags;
 typedef void(RgPassCallback)(void*, RgCmdBuffer*);
+
+typedef struct RgPlatformWindowInfo
+{
+    struct
+    {
+        void *window;
+        void *display;
+    } x11;
+    struct
+    {
+        void*window;
+    } win32;
+} RgPlatformWindowInfo;
 
 typedef enum
 {
@@ -292,7 +300,7 @@ void rgBufferUpload(RgDevice *device, RgBuffer *buffer, size_t offset, size_t si
 RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info);
 void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline);
 
-RgGraph *rgGraphCreate(RgDevice *device, void *user_data, void *window);
+RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *window);
 RgPass *rgGraphAddPass(RgGraph *graph, RgPassCallback *callback);
 RgResource *rgGraphAddResource(RgGraph *graph, RgResourceInfo *info);
 void rgGraphAddPassInput(RgPass *pass, RgResource *resource);

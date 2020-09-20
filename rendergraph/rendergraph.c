@@ -7,14 +7,22 @@
 
 #ifdef RENDERGRAPH_FEATURE_VULKAN
 
+#define VK_NO_PROTOTYPES
+
+#if defined(__linux__)
+#define RG_PLATFORM_XLIB
+#define VK_USE_PLATFORM_XLIB_KHR
+#include <X11/Xlib.h>
+#elif defined(_WIN32)
+#define RG_PLATFORM_WIN32
+#define VK_USE_PLATFORM_WIN32_KHR
+#else
+#error Unsupported OS
+#endif
+
 #define VOLK_IMPLEMENTATION
 #include "volk.h"
 #include "vk_mem_alloc.h"
-
-#ifdef RENDERGRAPH_FEATURE_SDL2
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
-#endif
 
 #define RG_MAX(a, b) ((a > b) ? (a) : (b))
 #define RG_CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : (x) > (hi) ? (hi) : (x))
@@ -275,9 +283,7 @@ typedef struct RgSwapchain
 {
     RgDevice *device;
 
-#ifdef RENDERGRAPH_FEATURE_SDL2
-    SDL_Window *window;
-#endif
+    RgPlatformWindowInfo window;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
 
@@ -535,15 +541,6 @@ RgDevice *rgDeviceCreate()
 
     VK_CHECK(volkInitialize());
 
-#ifdef RENDERGRAPH_FEATURE_SDL2
-    if (!SDL_WasInit(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
-    {
-        SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
-    }
-
-    SDL_Vulkan_LoadLibrary(NULL);
-#endif // RENDERGRAPH_FEATURE_SDL2
-
 #ifdef RENDERGRAPH_FEATURE_VALIDATION
     if (check_validation_layer_support())
     {
@@ -574,36 +571,45 @@ RgDevice *rgDeviceCreate()
     instance_info.enabledLayerCount = RG_LENGTH(RG_REQUIRED_VALIDATION_LAYERS);
     instance_info.ppEnabledLayerNames = RG_REQUIRED_VALIDATION_LAYERS;
 
-    const char **instance_extensions = NULL;
+
+#if defined(RG_PLATFORM_XLIB)
+    const char *platform_extensions[2] = {
+        "VK_KHR_surface",
+        "VK_KHR_xlib_surface",
+    };
+#elif defined(RG_PLATFORM_WIN32)
+    const char *platform_extensions[2] = {
+        "VK_KHR_surface",
+        "VK_KHR_win32_surface",
+    };
+#else
+    const char *platform_extensions[0];
+#endif
+
     uint32_t num_instance_extensions = 0;
-
-#ifdef RENDERGRAPH_FEATURE_SDL2
-    uint32_t sdl_instance_ext_count = 0;
-    if (!SDL_Vulkan_GetInstanceExtensions(NULL, &sdl_instance_ext_count, NULL))
-    {
-        fprintf(stderr, "SDL Error: %s\n", SDL_GetError());
-        exit(1);
-    }
-
-    num_instance_extensions += sdl_instance_ext_count;
+    num_instance_extensions += RG_LENGTH(platform_extensions);
     num_instance_extensions += RG_LENGTH(RG_REQUIRED_INSTANCE_EXTENSIONS);
 
-    instance_extensions =
+    const char **instance_extensions =
         (const char **)malloc(num_instance_extensions * sizeof(*instance_extensions));
-    SDL_Vulkan_GetInstanceExtensions(NULL, &sdl_instance_ext_count, instance_extensions);
+
     memcpy(
-        instance_extensions + sdl_instance_ext_count,
+        instance_extensions,
+        platform_extensions,
+        RG_LENGTH(platform_extensions) * sizeof(char *));
+    memcpy(
+        instance_extensions + RG_LENGTH(platform_extensions),
         RG_REQUIRED_INSTANCE_EXTENSIONS,
         RG_LENGTH(RG_REQUIRED_INSTANCE_EXTENSIONS) * sizeof(char *));
-#endif
 
     instance_info.enabledExtensionCount = num_instance_extensions;
     instance_info.ppEnabledExtensionNames = instance_extensions;
 
     VK_CHECK(vkCreateInstance(&instance_info, NULL, &device->instance));
-    free(instance_extensions);
 
     volkLoadInstance(device->instance);
+
+    free(instance_extensions);
 
 #ifdef RENDERGRAPH_FEATURE_VALIDATION
     VkDebugUtilsMessengerCreateInfoEXT debug_create_info;
@@ -814,19 +820,54 @@ void rgDeviceDestroy(RgDevice *device)
 // }}}
 
 // Swapchain setup {{{
-#ifdef RENDERGRAPH_FEATURE_SDL2
-static void rgSwapchainInitSDL2(RgDevice *device, RgSwapchain *swapchain, SDL_Window *window)
+static void rgGetWindowSize(RgPlatformWindowInfo *window, uint32_t *width, uint32_t *height)
+{
+#if defined(RG_PLATFORM_XLIB)
+    XWindowAttributes attribs;
+    XGetWindowAttributes((Display*)window->x11.display, (Window)window->x11.window, &attribs);
+
+    if (width)
+        *width = (uint32_t)attribs.width;
+    if (height)
+        *height = (uint32_t)attribs.height;
+#elif defined(RG_PLATFORM_WIN32)
+    RECT area;
+    GetClientRect(window->win32.window, &area);
+
+    if (width)
+        *width = (uint32_t)area.right;
+    if (height)
+        *height = (uint32_t)area.bottom;
+#endif
+}
+
+static void rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatformWindowInfo *window)
 {
     memset(swapchain, 0, sizeof(*swapchain));
 
-    swapchain->window = window;
+    if (window)
+    {
+        swapchain->window = *window;
+    }
     swapchain->device = device;
 
-    if (!SDL_Vulkan_CreateSurface(swapchain->window, device->instance, &swapchain->surface))
-    {
-        fprintf(stderr, "Could not create window surface\n");
-        exit(1);
-    }
+#if defined(RG_PLATFORM_XLIB)
+    VkXlibSurfaceCreateInfoKHR surface_ci;
+    memset(&surface_ci, 0, sizeof(surface_ci));
+    surface_ci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+    surface_ci.dpy = (Display*)window->x11.display;
+    surface_ci.window = (Window)window->x11.window;
+
+    VK_CHECK(vkCreateXlibSurfaceKHR(device->instance, &surface_ci, NULL, &swapchain->surface));
+#elif defined(RG_PLATFORM_WIN32)
+    VkWin32SurfaceCreateInfoKHR surface_ci;
+    memset(&surface_ci, 0, sizeof(surface_ci));
+    sci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    sci.hinstance = GetModuleHandle(NULL);
+    sci.hwnd = (HWND)window->win32.window;
+
+    VK_CHECK(vkCreateWin32SurfaceKHR(device->instance, &surface_ci, NULL, &swapchain->surface));
+#endif
 
     swapchain->present_family_index = UINT32_MAX;
 
@@ -863,7 +904,6 @@ static void rgSwapchainInitSDL2(RgDevice *device, RgSwapchain *swapchain, SDL_Wi
     // Get present queue
     vkGetDeviceQueue(device->device, swapchain->present_family_index, 0, &swapchain->present_queue);
 }
-#endif // RENDERGRAPH_FEATURE_SDL2
 
 static void rgSwapchainDestroy(RgDevice *device, RgSwapchain *swapchain)
 {
@@ -884,12 +924,8 @@ static void rgSwapchainDestroy(RgDevice *device, RgSwapchain *swapchain)
 
 static void rgSwapchainResize(RgSwapchain *swapchain)
 {
-    int iwidth, iheight;
-    SDL_Vulkan_GetDrawableSize(swapchain->window, &iwidth, &iheight);
-    assert(iwidth > 0 && iheight > 0);
-
-    uint32_t width = (uint32_t)iwidth;
-    uint32_t height = (uint32_t)iheight;
+    uint32_t width, height;
+    rgGetWindowSize(&swapchain->window, &width, &height);
 
     VK_CHECK(vkDeviceWaitIdle(swapchain->device->device));
 
@@ -2998,7 +3034,7 @@ void rgGraphResize(RgGraph *graph)
     }
 }
 
-RgGraph *rgGraphCreate(RgDevice *device, void *user_data, void *window)
+RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *window)
 {
     RgGraph *graph = (RgGraph *)malloc(sizeof(RgGraph));
     memset(graph, 0, sizeof(*graph));
@@ -3006,13 +3042,11 @@ RgGraph *rgGraphCreate(RgDevice *device, void *user_data, void *window)
     graph->device = device;
     graph->user_data = user_data;
 
-#ifdef RENDERGRAPH_FEATURE_SDL2
     if (window)
     {
         graph->has_swapchain = true;
-        rgSwapchainInitSDL2(device, &graph->swapchain, (SDL_Window *)window);
+        rgSwapchainInit(device, &graph->swapchain, window);
     }
-#endif
 
     return graph;
 }
