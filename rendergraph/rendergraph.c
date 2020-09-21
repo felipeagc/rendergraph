@@ -344,6 +344,7 @@ struct RgGraph
 {
     RgDevice *device;
 
+    bool built;
     bool has_swapchain;
     RgSwapchain swapchain;
 
@@ -590,8 +591,8 @@ RgDevice *rgDeviceCreate()
     num_instance_extensions += RG_LENGTH(platform_extensions);
     num_instance_extensions += RG_LENGTH(RG_REQUIRED_INSTANCE_EXTENSIONS);
 
-    const char **instance_extensions =
-        (const char **)malloc(num_instance_extensions * sizeof(*instance_extensions));
+    char **instance_extensions =
+        (char **)malloc(num_instance_extensions * sizeof(*instance_extensions));
 
     memcpy(
         instance_extensions,
@@ -739,8 +740,8 @@ RgDevice *rgDeviceCreate()
         device->physical_device, NULL, &num_device_extensions, device_extensions);
 
     uint32_t num_enabled_device_extensions = RG_LENGTH(RG_REQUIRED_DEVICE_EXTENSIONS);
-    const char **enabled_device_extensions =
-        (const char **)malloc(sizeof(char *) * num_enabled_device_extensions);
+    char **enabled_device_extensions =
+        (char **)malloc(sizeof(char *) * num_enabled_device_extensions);
 
     memcpy(
         enabled_device_extensions,
@@ -862,9 +863,9 @@ static void rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatform
 #elif defined(RG_PLATFORM_WIN32)
     VkWin32SurfaceCreateInfoKHR surface_ci;
     memset(&surface_ci, 0, sizeof(surface_ci));
-    sci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    sci.hinstance = GetModuleHandle(NULL);
-    sci.hwnd = (HWND)window->win32.window;
+    surface_ci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    surface_ci.hinstance = GetModuleHandle(NULL);
+    surface_ci.hwnd = (HWND)window->win32.window;
 
     VK_CHECK(vkCreateWin32SurfaceKHR(device->instance, &surface_ci, NULL, &swapchain->surface));
 #endif
@@ -1143,6 +1144,7 @@ static VkFormat format_to_vk(RgFormat fmt)
     case RG_FORMAT_D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
     }
     assert(0);
+    return 0;
 }
 
 static VkFilter filter_to_vk(RgFilter value)
@@ -1153,6 +1155,7 @@ static VkFilter filter_to_vk(RgFilter value)
     case RG_FILTER_NEAREST: return VK_FILTER_NEAREST;
     }
     assert(0);
+    return 0;
 }
 
 static VkSamplerAddressMode address_mode_to_vk(RgSamplerAddressMode value)
@@ -1167,6 +1170,7 @@ static VkSamplerAddressMode address_mode_to_vk(RgSamplerAddressMode value)
         return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
     }
     assert(0);
+    return 0;
 }
 
 static VkBorderColor border_color_to_vk(RgBorderColor value)
@@ -1181,6 +1185,7 @@ static VkBorderColor border_color_to_vk(RgBorderColor value)
     case RG_BORDER_COLOR_INT_OPAQUE_WHITE: return VK_BORDER_COLOR_INT_OPAQUE_WHITE;
     }
     assert(0);
+    return 0;
 }
 
 static VkIndexType index_type_to_vk(RgIndexType index_type)
@@ -1191,6 +1196,7 @@ static VkIndexType index_type_to_vk(RgIndexType index_type)
     case RG_INDEX_TYPE_UINT32: return VK_INDEX_TYPE_UINT32;
     }
     assert(0);
+    return 0;
 }
 
 static VkCullModeFlagBits cull_mode_to_vk(RgCullMode cull_mode)
@@ -1203,6 +1209,7 @@ static VkCullModeFlagBits cull_mode_to_vk(RgCullMode cull_mode)
     case RG_CULL_MODE_FRONT_AND_BACK: return VK_CULL_MODE_FRONT_AND_BACK;
     }
     assert(0);
+    return 0;
 }
 
 static VkFrontFace front_face_to_vk(RgFrontFace front_face)
@@ -1213,6 +1220,7 @@ static VkFrontFace front_face_to_vk(RgFrontFace front_face)
     case RG_FRONT_FACE_COUNTER_CLOCKWISE: return VK_FRONT_FACE_COUNTER_CLOCKWISE;
     }
     assert(0);
+    return 0;
 }
 
 static VkPolygonMode polygon_mode_to_vk(RgPolygonMode polygon_mode)
@@ -1224,6 +1232,7 @@ static VkPolygonMode polygon_mode_to_vk(RgPolygonMode polygon_mode)
     case RG_POLYGON_MODE_POINT: return VK_POLYGON_MODE_POINT;
     }
     assert(0);
+    return 0;
 }
 
 static VkPrimitiveTopology primitive_topology_to_vk(RgPrimitiveTopology value)
@@ -1234,6 +1243,7 @@ static VkPrimitiveTopology primitive_topology_to_vk(RgPrimitiveTopology value)
     case RG_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     }
     assert(0);
+    return 0;
 }
 
 static VkDescriptorType pipeline_binding_type_to_vk(RgPipelineBindingType type)
@@ -1247,6 +1257,7 @@ static VkDescriptorType pipeline_binding_type_to_vk(RgPipelineBindingType type)
     case RG_BINDING_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
     assert(0);
+    return 0;
 }
 // }}}
 
@@ -1917,7 +1928,7 @@ static void rgDescriptorPoolGrow(RgDescriptorPool *pool)
 
     // Allocate descriptor sets
     VkDescriptorSetLayout set_layouts[RG_SETS_PER_PAGE];
-    for (uint i = 0; i < RG_SETS_PER_PAGE; i++)
+    for (uint32_t i = 0; i < RG_SETS_PER_PAGE; i++)
     {
         set_layouts[i] = pool->set_layout;
     }
@@ -3135,6 +3146,8 @@ void rgGraphBuild(RgGraph *graph)
             graph->device->device, &semaphore_info, NULL, &graph->image_available_semaphores[i]));
     }
 
+    assert(graph->num_passes > 0);
+
     graph->num_nodes = 1;
     graph->nodes = (RgNode *)malloc(sizeof(*graph->nodes) * graph->num_nodes);
     for (uint32_t i = 0; i < graph->num_nodes; ++i)
@@ -3149,6 +3162,8 @@ void rgGraphBuild(RgGraph *graph)
     }
 
     rgGraphResize(graph);
+
+    graph->built = true;
 }
 
 void rgGraphDestroy(RgGraph *graph)
@@ -3196,6 +3211,7 @@ void rgGraphDestroy(RgGraph *graph)
 
 void rgGraphExecute(RgGraph *graph)
 {
+    assert(graph->built);
     uint32_t current_frame = graph->current_frame;
 
     for (uint32_t i = 0; i < graph->num_nodes; ++i)
@@ -3334,6 +3350,8 @@ void rgGraphExecute(RgGraph *graph)
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &graph->swapchain.swapchain;
     present_info.pImageIndices = &graph->swapchain.current_image_index;
+
+    assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
 
     VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
     if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
