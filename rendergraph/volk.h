@@ -1198,25 +1198,13 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 // Prevent tools like dependency checkers that don't evaluate
 // macros from detecting a cyclic dependency.
 #ifdef _WIN32
-	typedef const char* LPCSTR;
-	typedef struct HINSTANCE__* HINSTANCE;
-	typedef HINSTANCE HMODULE;
-	#ifdef _WIN64
-		typedef __int64 (__stdcall* FARPROC)(void);
-	#else
-		typedef int (__stdcall* FARPROC)(void);
-	#endif
+#include <windows.h>
 #else
 #	include <dlfcn.h>
 #endif
 
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-#ifdef _WIN32
-__declspec(dllimport) HMODULE __stdcall LoadLibraryA(LPCSTR);
-__declspec(dllimport) FARPROC __stdcall GetProcAddress(HMODULE, LPCSTR);
 #endif
 
 static VkInstance loadedInstance = VK_NULL_HANDLE;
