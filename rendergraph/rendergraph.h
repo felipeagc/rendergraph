@@ -38,27 +38,27 @@ typedef struct RgPlatformWindowInfo
     } win32;
 } RgPlatformWindowInfo;
 
-typedef enum
+typedef enum RgFormat
 {
     RG_FORMAT_UNDEFINED = 0,
 
-    RG_FORMAT_RGB8_UNORM,
-    RG_FORMAT_RGBA8_UNORM,
+    RG_FORMAT_RGB8_UNORM = 1,
+    RG_FORMAT_RGBA8_UNORM = 2,
 
-    RG_FORMAT_R32_UINT,
+    RG_FORMAT_R32_UINT = 3,
 
-    RG_FORMAT_R32_SFLOAT,
-    RG_FORMAT_RG32_SFLOAT,
-    RG_FORMAT_RGB32_SFLOAT,
-    RG_FORMAT_RGBA32_SFLOAT,
+    RG_FORMAT_R32_SFLOAT = 4,
+    RG_FORMAT_RG32_SFLOAT = 5,
+    RG_FORMAT_RGB32_SFLOAT = 6,
+    RG_FORMAT_RGBA32_SFLOAT = 7,
 
-    RG_FORMAT_RGBA16_SFLOAT,
+    RG_FORMAT_RGBA16_SFLOAT = 8,
 
-    RG_FORMAT_D32_SFLOAT,
-    RG_FORMAT_D24_UNORM_S8_UINT,
+    RG_FORMAT_D32_SFLOAT = 9,
+    RG_FORMAT_D24_UNORM_S8_UINT = 10,
 } RgFormat;
 
-typedef enum
+typedef enum RgImageUsage
 {
 	RG_IMAGE_USAGE_SAMPLED                  = 1 << 0,
 	RG_IMAGE_USAGE_TRANSFER_DST             = 1 << 1,
@@ -68,39 +68,39 @@ typedef enum
 	RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 5,
 } RgImageUsage;
 
-typedef enum
+typedef enum RgImageAspect
 {
 	RG_IMAGE_ASPECT_COLOR   = 1 << 0,
 	RG_IMAGE_ASPECT_DEPTH   = 1 << 1,
 	RG_IMAGE_ASPECT_STENCIL = 1 << 2,
 } RgImageAspect;
 
-typedef enum
+typedef enum RgFilter
 {
-	RG_FILTER_LINEAR,
-	RG_FILTER_NEAREST,
+	RG_FILTER_LINEAR = 0,
+	RG_FILTER_NEAREST = 1,
 } RgFilter;
 
-typedef enum
+typedef enum RgSamplerAddressMode
 {
-    RG_SAMPLER_ADDRESS_MODE_REPEAT,
-    RG_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
-    RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-    RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-    RG_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE,
+    RG_SAMPLER_ADDRESS_MODE_REPEAT = 0,
+    RG_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT = 1,
+    RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2,
+    RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER = 3,
+    RG_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE= 4,
 } RgSamplerAddressMode;
 
-typedef enum
+typedef enum RgBorderColor
 {
-    RG_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
-    RG_BORDER_COLOR_INT_TRANSPARENT_BLACK,
-    RG_BORDER_COLOR_FLOAT_OPAQUE_BLACK,
-    RG_BORDER_COLOR_INT_OPAQUE_BLACK,
-    RG_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-    RG_BORDER_COLOR_INT_OPAQUE_WHITE,
+    RG_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK = 0,
+    RG_BORDER_COLOR_INT_TRANSPARENT_BLACK = 1,
+    RG_BORDER_COLOR_FLOAT_OPAQUE_BLACK = 2,
+    RG_BORDER_COLOR_INT_OPAQUE_BLACK = 3,
+    RG_BORDER_COLOR_FLOAT_OPAQUE_WHITE = 4,
+    RG_BORDER_COLOR_INT_OPAQUE_WHITE = 5,
 } RgBorderColor;
 
-typedef struct
+typedef struct RgImageInfo
 {
 	uint32_t width;
 	uint32_t height;
@@ -113,7 +113,7 @@ typedef struct
 	RgFormat format;
 } RgImageInfo;
 
-typedef struct
+typedef struct RgSamplerInfo
 {
     bool anisotropy;
     float min_lod;
@@ -124,7 +124,7 @@ typedef struct
     RgBorderColor border_color;
 } RgSamplerInfo;
 
-typedef enum
+typedef enum RgBufferUsage
 {
 	RG_BUFFER_USAGE_VERTEX       = 1 << 0,
 	RG_BUFFER_USAGE_INDEX        = 1 << 1,
@@ -134,87 +134,87 @@ typedef enum
 	RG_BUFFER_USAGE_STORAGE      = 1 << 5,
 } RgBufferUsage;
 
-typedef enum
+typedef enum RgBufferMemory
 {
 	RG_BUFFER_MEMORY_HOST = 1,
 	RG_BUFFER_MEMORY_DEVICE,
 } RgBufferMemory;
 
-typedef struct
+typedef struct RgBufferInfo
 {
 	size_t size;
 	RgFlags usage;
 	RgBufferMemory memory;
 } RgBufferInfo;
 
-typedef enum
+typedef enum RgIndexType
 {
     RG_INDEX_TYPE_UINT32 = 0,
-    RG_INDEX_TYPE_UINT16,
+    RG_INDEX_TYPE_UINT16 = 1,
 } RgIndexType;
 
-typedef enum
+typedef enum RgPolygonMode
 {
     RG_POLYGON_MODE_FILL = 0,
-    RG_POLYGON_MODE_LINE,
-    RG_POLYGON_MODE_POINT,
+    RG_POLYGON_MODE_LINE = 1,
+    RG_POLYGON_MODE_POINT = 2,
 } RgPolygonMode;
 
-typedef enum
+typedef enum RgPrimitiveTopology
 {
     RG_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 0,
-    RG_PRIMITIVE_TOPOLOGY_LINE_LIST,
+    RG_PRIMITIVE_TOPOLOGY_LINE_LIST = 1,
 } RgPrimitiveTopology;
 
-typedef enum
+typedef enum RgFrontFace
 {
     RG_FRONT_FACE_CLOCKWISE = 0,
-    RG_FRONT_FACE_COUNTER_CLOCKWISE,
+    RG_FRONT_FACE_COUNTER_CLOCKWISE = 1,
 } RgFrontFace;
 
-typedef enum
+typedef enum RgCullMode
 {
     RG_CULL_MODE_NONE = 0,
-    RG_CULL_MODE_BACK,
-    RG_CULL_MODE_FRONT,
-    RG_CULL_MODE_FRONT_AND_BACK,
+    RG_CULL_MODE_BACK = 1,
+    RG_CULL_MODE_FRONT = 2,
+    RG_CULL_MODE_FRONT_AND_BACK = 3,
 } RgCullMode;
 
-typedef enum
+typedef enum RgPipelineBindingType
 {
     RG_BINDING_UNIFORM_BUFFER = 1,
-    RG_BINDING_STORAGE_BUFFER,
-    RG_BINDING_IMAGE,
-    RG_BINDING_SAMPLER,
-    RG_BINDING_IMAGE_SAMPLER,
+    RG_BINDING_STORAGE_BUFFER = 2,
+    RG_BINDING_IMAGE = 3,
+    RG_BINDING_SAMPLER = 4,
+    RG_BINDING_IMAGE_SAMPLER = 5,
 } RgPipelineBindingType;
 
-typedef struct
+typedef struct RgPipelineBinding
 {
     uint32_t set;
     uint32_t binding;
     RgPipelineBindingType type;
 } RgPipelineBinding;
 
-typedef struct
+typedef struct RgVertexAttribute
 {
     RgFormat format;
     uint32_t offset;
 } RgVertexAttribute;
 
-typedef struct
+typedef struct RgPipelineBlendState
 {
     bool enable;
 } RgPipelineBlendState;
 
-typedef struct
+typedef struct RgPipelineDepthStencilState
 {
     bool test_enable;
     bool write_enable;
     bool bias_enable;
 } RgPipelineDepthStencilState;
 
-typedef struct 
+typedef struct RgPipelineInfo
 {
     RgPolygonMode       polygon_mode;
     RgCullMode          cull_mode;
@@ -240,13 +240,13 @@ typedef struct
     const char* fragment_entry;
 } RgPipelineInfo;
 
-typedef enum
+typedef enum RgResourceType
 {
     RG_RESOURCE_COLOR_ATTACHMENT,
     RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT,
 } RgResourceType;
 
-typedef struct
+typedef struct RgResourceInfo
 {
     RgResourceType type;
     union 
@@ -266,7 +266,7 @@ typedef struct RgExtent3D
     uint32_t width, height, depth;
 } RgExtent3D;
 
-typedef struct
+typedef struct RgImageCopy
 {
     RgImage *image;
     uint32_t mip_level;
@@ -274,7 +274,8 @@ typedef struct
     RgOffset3D offset;
 } RgImageCopy;
 
-typedef struct {
+typedef struct RgBufferCopy
+{
     RgBuffer *buffer;
     size_t offset;
     uint32_t row_length;
