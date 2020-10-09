@@ -8,7 +8,7 @@ extern "C" {
 
 typedef struct RgExtCompiledShader
 {
-    uint8_t *code;
+    const uint8_t *code;
     size_t code_size;
     const char* entry_point;
 } RgExtCompiledShader;
