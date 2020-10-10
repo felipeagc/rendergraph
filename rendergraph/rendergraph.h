@@ -19,11 +19,19 @@ typedef struct RgImage RgImage;
 typedef struct RgSampler RgSampler;
 typedef struct RgCmdBuffer RgCmdBuffer;
 typedef struct RgGraph RgGraph;
-typedef struct RgPass RgPass;
 typedef struct RgNode RgNode;
-typedef struct RgResource RgResource;
 typedef uint32_t RgFlags;
 typedef void(RgPassCallback)(void*, RgCmdBuffer*);
+
+typedef struct RgResourceRef
+{
+    uint32_t index;
+} RgResourceRef;
+
+typedef struct RgPassRef
+{
+    uint32_t index;
+} RgPassRef;
 
 typedef struct RgPlatformWindowInfo
 {
@@ -322,10 +330,10 @@ RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info);
 void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline);
 
 RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *window);
-RgPass *rgGraphAddPass(RgGraph *graph, RgPassCallback *callback);
-RgResource *rgGraphAddResource(RgGraph *graph, RgResourceInfo *info);
-void rgGraphAddPassInput(RgPass *pass, RgResource *resource);
-void rgGraphAddPassOutput(RgPass *pass, RgResource *resource);
+RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback);
+RgResourceRef rgGraphAddResource(RgGraph *graph, RgResourceInfo *info);
+void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass, RgResourceRef resource);
+void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass, RgResourceRef resource);
 void rgGraphBuild(RgGraph *graph);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph);

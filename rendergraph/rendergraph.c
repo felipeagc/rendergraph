@@ -266,6 +266,7 @@ typedef union
     VkDescriptorBufferInfo buffer;
 } RgDescriptor;
 
+typedef struct RgPass RgPass;
 struct RgCmdBuffer
 {
     RgDevice *device;
@@ -301,7 +302,7 @@ typedef struct RgSwapchain
     uint32_t current_image_index;
 } RgSwapchain;
 
-struct RgResource
+typedef struct RgResource
 {
     RgResourceType type;
     union
@@ -314,7 +315,7 @@ struct RgResource
         RgImage *image;
         RgBuffer *buffer;
     };
-};
+} RgResource;
 
 struct RgPass
 {
@@ -3207,22 +3208,27 @@ RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *
     return graph;
 }
 
-RgPass *rgGraphAddPass(RgGraph *graph, RgPassCallback *callback)
+RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback)
 {
-    RgPass *pass = &graph->passes[graph->num_passes];
-    assert(pass < (&graph->passes[RG_MAX_GRAPH_PASSES]));
-    graph->num_passes++;
+    RgPassRef ref;
+    ref.index = graph->num_passes++;
 
+    assert(ref.index < RG_MAX_GRAPH_PASSES);
+
+    RgPass *pass = &graph->passes[ref.index];
     memset(pass, 0, sizeof(*pass));
 
     pass->graph = graph;
     pass->callback = callback;
 
-    return pass;
+    return ref;
 }
 
-RgResource *rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
+RgResourceRef rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
 {
+    RgResourceRef ref;
+    ref.index = graph->num_resources;
+
     RgResource *resource = &graph->resources[graph->num_resources];
     assert(resource < (&graph->resources[RG_MAX_GRAPH_RESOURCES]));
     graph->num_resources++;
@@ -3258,29 +3264,21 @@ RgResource *rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
         break;
     }
 
-    return resource;
+    return ref;
 }
 
-void rgGraphAddPassInput(RgPass *pass, RgResource *resource)
+void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref)
 {
-    uint32_t resource_index = (uint32_t)(resource - pass->graph->resources);
-
-    uint32_t *resource_ptr = &pass->inputs[pass->num_inputs];
-    assert(resource_ptr < (&pass->inputs[RG_MAX_PASS_RESOURCES]));
-
-    *resource_ptr = resource_index;
-    pass->num_inputs++;
+    RgPass *pass = &graph->passes[pass_ref.index];
+    assert(pass->num_inputs < RG_MAX_PASS_RESOURCES);
+    pass->inputs[pass->num_inputs++] = resource_ref.index;
 }
 
-void rgGraphAddPassOutput(RgPass *pass, RgResource *resource)
+void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref)
 {
-    uint32_t resource_index = (uint32_t)(resource - pass->graph->resources);
-
-    uint32_t *resource_ptr = &pass->outputs[pass->num_outputs];
-    assert(resource_ptr < (&pass->outputs[RG_MAX_PASS_RESOURCES]));
-
-    *resource_ptr = resource_index;
-    pass->num_outputs++;
+    RgPass *pass = &graph->passes[pass_ref.index];
+    assert(pass->num_outputs < RG_MAX_PASS_RESOURCES);
+    pass->outputs[pass->num_outputs++] = resource_ref.index;
 }
 
 void rgGraphBuild(RgGraph *graph)
