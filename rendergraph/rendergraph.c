@@ -320,6 +320,8 @@ struct RgPass
 {
     RgGraph *graph;
 
+    bool is_backbuffer;
+
     VkRenderPass renderpass;
     VkExtent2D extent;
     uint64_t hash;
@@ -2905,19 +2907,23 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         pass->renderpass = VK_NULL_HANDLE;
     }
 
-    if (pass->num_framebuffers < graph->swapchain.num_images)
+    if (pass->framebuffers)
+    {
+        free(pass->framebuffers);
+    }
+
+    if (pass->is_backbuffer)
     {
         pass->num_framebuffers = graph->swapchain.num_images;
-
-        if (pass->framebuffers)
-        {
-            free(pass->framebuffers);
-        }
-
-        pass->framebuffers =
-            (VkFramebuffer *)malloc(sizeof(VkFramebuffer) * pass->num_framebuffers);
-        memset(pass->framebuffers, 0, sizeof(VkFramebuffer) * pass->num_framebuffers);
     }
+    else
+    {
+        pass->num_framebuffers = 1;
+    }
+
+    pass->framebuffers =
+        (VkFramebuffer *)malloc(sizeof(VkFramebuffer) * pass->num_framebuffers);
+    memset(pass->framebuffers, 0, sizeof(VkFramebuffer) * pass->num_framebuffers);
 
     uint32_t num_rp_attachments = 0;
     VkAttachmentDescription rp_attachments[RG_MAX_ATTACHMENTS];
@@ -2931,7 +2937,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     VkAttachmentReference depth_stencil_attachment_ref;
     memset(&depth_stencil_attachment_ref, 0, sizeof(depth_stencil_attachment_ref));
 
-    if (graph->has_swapchain)
+    if (pass->is_backbuffer)
     {
         VkAttachmentDescription *backbuffer = &rp_attachments[num_rp_attachments++];
         backbuffer->format = graph->swapchain.image_format;
@@ -3039,7 +3045,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         VkImageView views[RG_MAX_ATTACHMENTS];
         memset(views, 0, sizeof(views));
 
-        if (graph->has_swapchain)
+        if (pass->is_backbuffer)
         {
             views[num_views++] = graph->swapchain.image_views[i];
         }
@@ -3074,7 +3080,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
 static void rgPassBuild(RgGraph *graph, RgPass *pass)
 {
-    if (graph->has_swapchain)
+    if (pass->is_backbuffer)
     {
         pass->num_color_attachments++;
         pass->num_attachments++;
@@ -3246,7 +3252,8 @@ RgResource *rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
 
     case RG_RESOURCE_COLOR_ATTACHMENT:
         resource->image_info = info->image;
-        resource->image_info.usage |= RG_IMAGE_USAGE_COLOR_ATTACHMENT;
+        resource->image_info.usage |=
+            RG_IMAGE_USAGE_SAMPLED | RG_IMAGE_USAGE_COLOR_ATTACHMENT;
         resource->image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
         break;
     }
@@ -3296,12 +3303,24 @@ void rgGraphBuild(RgGraph *graph)
     graph->nodes = (RgNode *)malloc(sizeof(*graph->nodes) * graph->num_nodes);
     for (uint32_t i = 0; i < graph->num_nodes; ++i)
     {
-        uint32_t pass_indices[1] = {0};
-        rgNodeInit(graph, &graph->nodes[i], pass_indices, 1);
+        // TODO: split passes across multiple nodes when needed (e.g. compute)
+        uint32_t *pass_indices = malloc(sizeof(uint32_t) * graph->num_passes);
+        uint32_t num_passes = graph->num_passes;
+
+        for (uint32_t i = 0; i < graph->num_passes; ++i)
+        {
+            pass_indices[i] = i;
+        }
+
+        rgNodeInit(graph, &graph->nodes[i], pass_indices, num_passes);
     }
 
     for (uint32_t i = 0; i < graph->num_passes; ++i)
     {
+        if (i == (graph->num_passes - 1) && graph->has_swapchain)
+        {
+            graph->passes[i].is_backbuffer = true;
+        }
         rgPassBuild(graph, &graph->passes[i]);
     }
 
@@ -3415,8 +3434,15 @@ void rgGraphExecute(RgGraph *graph)
         {
             RgPass *pass = &graph->passes[node->pass_indices[j]];
 
-            pass->current_framebuffer =
-                pass->framebuffers[graph->swapchain.current_image_index];
+            if (pass->is_backbuffer)
+            {
+                pass->current_framebuffer =
+                    pass->framebuffers[graph->swapchain.current_image_index];
+            }
+            else
+            {
+                pass->current_framebuffer = pass->framebuffers[0];
+            }
 
             uint32_t num_clear_values = pass->num_attachments;
             VkClearValue clear_values[RG_MAX_ATTACHMENTS];
