@@ -977,7 +977,7 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
         for (uint32_t i = 0; i < num_formats; ++i)
         {
             VkSurfaceFormatKHR *format = &formats[i];
-            if (format->format == VK_FORMAT_B8G8R8A8_SRGB)
+            if (format->format == VK_FORMAT_B8G8R8A8_UNORM)
             {
                 surface_format = *format;
                 break;
