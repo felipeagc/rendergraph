@@ -231,11 +231,11 @@ typedef struct RgPipelineInfo
     uint32_t num_bindings;
     RgPipelineBinding *bindings;
 
-    uint8_t *vertex;
+    const uint8_t *vertex;
     size_t vertex_size;
     const char* vertex_entry;
 
-    uint8_t *fragment;
+    const uint8_t *fragment;
     size_t fragment_size;
     const char* fragment_entry;
 } RgPipelineInfo;
@@ -246,12 +246,32 @@ typedef enum RgResourceType
     RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT,
 } RgResourceType;
 
+typedef enum RgGraphImageScalingMode
+{
+    RG_GRAPH_IMAGE_SCALING_MODE_RELATIVE = 0,
+    RG_GRAPH_IMAGE_SCALING_MODE_ABSOLUTE = 1,
+} RgGraphImageScalingMode;
+
+typedef struct RgGraphImageInfo
+{
+    RgGraphImageScalingMode scaling_mode;
+	float width;
+	float height;
+	uint32_t depth;
+	uint32_t sample_count;
+	uint32_t mip_count;
+	uint32_t layer_count;
+	RgFlags usage;
+	RgFlags aspect;
+	RgFormat format;
+} RgGraphImageInfo;
+
 typedef struct RgResourceInfo
 {
     RgResourceType type;
     union 
     {
-        RgImageInfo image;
+        RgGraphImageInfo image;
         RgBufferInfo buffer;
     };
 } RgResourceInfo;

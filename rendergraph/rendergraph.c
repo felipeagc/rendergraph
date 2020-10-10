@@ -1,9 +1,9 @@
 #include "rendergraph.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 
 #ifdef RENDERGRAPH_FEATURE_VULKAN
 
@@ -21,8 +21,8 @@
 #endif
 
 #define VOLK_IMPLEMENTATION
-#include "volk.h"
 #include "vk_mem_alloc.h"
+#include "volk.h"
 
 #define RG_MAX(a, b) ((a > b) ? (a) : (b))
 #define RG_CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : (x) > (hi) ? (hi) : (x))
@@ -59,14 +59,14 @@ static const char *RG_EQUIRED_VALIDATION_LAYERS[0] = {};
 
 static const char *RG_REQUIRED_DEVICE_EXTENSIONS[1] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-#define VK_CHECK(result)                                                                           \
-    do                                                                                             \
-    {                                                                                              \
-        if (result != VK_SUCCESS)                                                                  \
-        {                                                                                          \
-            fprintf(stderr, "%s:%u vulkan error: %d\n", __FILE__, __LINE__, result);               \
-            exit(1);                                                                               \
-        }                                                                                          \
+#define VK_CHECK(result)                                                                 \
+    do                                                                                   \
+    {                                                                                    \
+        if (result != VK_SUCCESS)                                                        \
+        {                                                                                \
+            fprintf(stderr, "%s:%u vulkan error: %d\n", __FILE__, __LINE__, result);     \
+            exit(1);                                                                     \
+        }                                                                                \
     } while (0)
 
 // Hashing {{{
@@ -159,7 +159,8 @@ static void rgHashmapSet(RgHashmap *hashmap, uint64_t hash, uint64_t value)
     uint64_t i = hash & (hashmap->size - 1); // hash % size
     uint64_t iters = 0;
 
-    while ((hashmap->hashes[i] != hash) && hashmap->hashes[i] != 0 && iters < hashmap->size)
+    while ((hashmap->hashes[i] != hash) && hashmap->hashes[i] != 0 &&
+           iters < hashmap->size)
     {
         i = (i + 1) & (hashmap->size - 1); // (i+1) % size
         iters += 1;
@@ -181,7 +182,8 @@ static uint64_t *rgHashmapGet(RgHashmap *hashmap, uint64_t hash)
     uint64_t i = hash & (hashmap->size - 1); // hash % size
     uint64_t iters = 0;
 
-    while ((hashmap->hashes[i] != hash) && hashmap->hashes[i] != 0 && iters < hashmap->size)
+    while ((hashmap->hashes[i] != hash) && hashmap->hashes[i] != 0 &&
+           iters < hashmap->size)
     {
         i = (i + 1) & (hashmap->size - 1); // (i+1) % size
         iters += 1;
@@ -304,7 +306,7 @@ struct RgResource
     RgResourceType type;
     union
     {
-        RgImageInfo image_info;
+        RgGraphImageInfo image_info;
         RgBufferInfo buffer_info;
     };
     union
@@ -515,7 +517,8 @@ static uint32_t get_queue_family_index(RgDevice *device, VkQueueFlagBits queue_f
         for (uint32_t i = 0; i < device->num_queue_family_properties; i++)
         {
             if ((device->queue_family_properties[i].queueFlags & queue_flags) &&
-                ((device->queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0))
+                ((device->queue_family_properties[i].queueFlags &
+                  VK_QUEUE_GRAPHICS_BIT) == 0))
             {
                 return i;
             }
@@ -572,7 +575,6 @@ RgDevice *rgDeviceCreate()
     instance_info.enabledLayerCount = RG_LENGTH(RG_REQUIRED_VALIDATION_LAYERS);
     instance_info.ppEnabledLayerNames = RG_REQUIRED_VALIDATION_LAYERS;
 
-
 #if defined(RG_PLATFORM_XLIB)
     const char *platform_extensions[2] = {
         "VK_KHR_surface",
@@ -604,7 +606,7 @@ RgDevice *rgDeviceCreate()
         RG_LENGTH(RG_REQUIRED_INSTANCE_EXTENSIONS) * sizeof(char *));
 
     instance_info.enabledExtensionCount = num_instance_extensions;
-    instance_info.ppEnabledExtensionNames = instance_extensions;
+    instance_info.ppEnabledExtensionNames = (const char *const *)instance_extensions;
 
     VK_CHECK(vkCreateInstance(&instance_info, NULL, &device->instance));
 
@@ -643,8 +645,10 @@ RgDevice *rgDeviceCreate()
 
     free(physical_devices);
 
-    vkGetPhysicalDeviceProperties(device->physical_device, &device->physical_device_properties);
-    vkGetPhysicalDeviceFeatures(device->physical_device, &device->physical_device_features);
+    vkGetPhysicalDeviceProperties(
+        device->physical_device, &device->physical_device_properties);
+    vkGetPhysicalDeviceFeatures(
+        device->physical_device, &device->physical_device_features);
 
     vkGetPhysicalDeviceQueueFamilyProperties(
         device->physical_device, &device->num_queue_family_properties, NULL);
@@ -655,7 +659,10 @@ RgDevice *rgDeviceCreate()
         &device->num_queue_family_properties,
         device->queue_family_properties);
 
-    fprintf(stderr, "Using physical device: %s\n", device->physical_device_properties.deviceName);
+    fprintf(
+        stderr,
+        "Using physical device: %s\n",
+        device->physical_device_properties.deviceName);
     VkPhysicalDeviceFeatures enabled_features;
     memset(&enabled_features, 0, sizeof(enabled_features));
 
@@ -702,7 +709,8 @@ RgDevice *rgDeviceCreate()
     // Dedicated compute queue
     if (requested_queue_types & VK_QUEUE_COMPUTE_BIT)
     {
-        device->queue_family_indices.compute = get_queue_family_index(device, VK_QUEUE_COMPUTE_BIT);
+        device->queue_family_indices.compute =
+            get_queue_family_index(device, VK_QUEUE_COMPUTE_BIT);
         if (device->queue_family_indices.compute != device->queue_family_indices.graphics)
         {
             // If compute family index differs,
@@ -734,8 +742,8 @@ RgDevice *rgDeviceCreate()
     uint32_t num_device_extensions = 0;
     vkEnumerateDeviceExtensionProperties(
         device->physical_device, NULL, &num_device_extensions, NULL);
-    VkExtensionProperties *device_extensions =
-        (VkExtensionProperties *)malloc(sizeof(VkExtensionProperties) * num_device_extensions);
+    VkExtensionProperties *device_extensions = (VkExtensionProperties *)malloc(
+        sizeof(VkExtensionProperties) * num_device_extensions);
     vkEnumerateDeviceExtensionProperties(
         device->physical_device, NULL, &num_device_extensions, device_extensions);
 
@@ -749,9 +757,11 @@ RgDevice *rgDeviceCreate()
         RG_LENGTH(RG_REQUIRED_DEVICE_EXTENSIONS) * sizeof(char *));
 
     device_create_info.enabledExtensionCount = num_enabled_device_extensions;
-    device_create_info.ppEnabledExtensionNames = enabled_device_extensions;
+    device_create_info.ppEnabledExtensionNames =
+        (const char *const *)enabled_device_extensions;
 
-    VK_CHECK(vkCreateDevice(device->physical_device, &device_create_info, NULL, &device->device));
+    VK_CHECK(vkCreateDevice(
+        device->physical_device, &device_create_info, NULL, &device->device));
 
     free(enabled_device_extensions);
     free(device_extensions);
@@ -787,15 +797,18 @@ RgDevice *rgDeviceCreate()
     VK_CHECK(vmaCreateAllocator(&allocator_info, &device->allocator));
 
     vkGetDeviceQueue(
-        device->device, device->queue_family_indices.graphics, 0, &device->graphics_queue);
+        device->device,
+        device->queue_family_indices.graphics,
+        0,
+        &device->graphics_queue);
 
     VkCommandPoolCreateInfo cmd_pool_info;
     memset(&cmd_pool_info, 0, sizeof(cmd_pool_info));
     cmd_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cmd_pool_info.queueFamilyIndex = device->queue_family_indices.graphics;
     cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    VK_CHECK(
-        vkCreateCommandPool(device->device, &cmd_pool_info, NULL, &device->graphics_command_pool));
+    VK_CHECK(vkCreateCommandPool(
+        device->device, &cmd_pool_info, NULL, &device->graphics_command_pool));
 
     return device;
 }
@@ -821,28 +834,27 @@ void rgDeviceDestroy(RgDevice *device)
 // }}}
 
 // Swapchain setup {{{
-static void rgGetWindowSize(RgPlatformWindowInfo *window, uint32_t *width, uint32_t *height)
+static void
+rgGetWindowSize(RgPlatformWindowInfo *window, uint32_t *width, uint32_t *height)
 {
 #if defined(RG_PLATFORM_XLIB)
     XWindowAttributes attribs;
-    XGetWindowAttributes((Display*)window->x11.display, (Window)window->x11.window, &attribs);
+    XGetWindowAttributes(
+        (Display *)window->x11.display, (Window)window->x11.window, &attribs);
 
-    if (width)
-        *width = (uint32_t)attribs.width;
-    if (height)
-        *height = (uint32_t)attribs.height;
+    if (width) *width = (uint32_t)attribs.width;
+    if (height) *height = (uint32_t)attribs.height;
 #elif defined(RG_PLATFORM_WIN32)
     RECT area;
     GetClientRect(window->win32.window, &area);
 
-    if (width)
-        *width = (uint32_t)area.right;
-    if (height)
-        *height = (uint32_t)area.bottom;
+    if (width) *width = (uint32_t)area.right;
+    if (height) *height = (uint32_t)area.bottom;
 #endif
 }
 
-static void rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatformWindowInfo *window)
+static void
+rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatformWindowInfo *window)
 {
     memset(swapchain, 0, sizeof(*swapchain));
 
@@ -856,10 +868,11 @@ static void rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatform
     VkXlibSurfaceCreateInfoKHR surface_ci;
     memset(&surface_ci, 0, sizeof(surface_ci));
     surface_ci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-    surface_ci.dpy = (Display*)window->x11.display;
+    surface_ci.dpy = (Display *)window->x11.display;
     surface_ci.window = (Window)window->x11.window;
 
-    VK_CHECK(vkCreateXlibSurfaceKHR(device->instance, &surface_ci, NULL, &swapchain->surface));
+    VK_CHECK(
+        vkCreateXlibSurfaceKHR(device->instance, &surface_ci, NULL, &swapchain->surface));
 #elif defined(RG_PLATFORM_WIN32)
     VkWin32SurfaceCreateInfoKHR surface_ci;
     memset(&surface_ci, 0, sizeof(surface_ci));
@@ -867,15 +880,17 @@ static void rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatform
     surface_ci.hinstance = GetModuleHandle(NULL);
     surface_ci.hwnd = (HWND)window->win32.window;
 
-    VK_CHECK(vkCreateWin32SurfaceKHR(device->instance, &surface_ci, NULL, &swapchain->surface));
+    VK_CHECK(vkCreateWin32SurfaceKHR(
+        device->instance, &surface_ci, NULL, &swapchain->surface));
 #endif
 
     swapchain->present_family_index = UINT32_MAX;
 
     uint32_t num_queue_families = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device->physical_device, &num_queue_families, NULL);
-    VkQueueFamilyProperties *queue_families =
-        (VkQueueFamilyProperties *)malloc(sizeof(VkQueueFamilyProperties) * num_queue_families);
+    vkGetPhysicalDeviceQueueFamilyProperties(
+        device->physical_device, &num_queue_families, NULL);
+    VkQueueFamilyProperties *queue_families = (VkQueueFamilyProperties *)malloc(
+        sizeof(VkQueueFamilyProperties) * num_queue_families);
     vkGetPhysicalDeviceQueueFamilyProperties(
         device->physical_device, &num_queue_families, queue_families);
 
@@ -903,7 +918,8 @@ static void rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatform
     }
 
     // Get present queue
-    vkGetDeviceQueue(device->device, swapchain->present_family_index, 0, &swapchain->present_queue);
+    vkGetDeviceQueue(
+        device->device, swapchain->present_family_index, 0, &swapchain->present_queue);
 }
 
 static void rgSwapchainDestroy(RgDevice *device, RgSwapchain *swapchain)
@@ -934,7 +950,8 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
     {
         for (uint32_t i = 0; i < swapchain->num_images; ++i)
         {
-            vkDestroyImageView(swapchain->device->device, swapchain->image_views[i], NULL);
+            vkDestroyImageView(
+                swapchain->device->device, swapchain->image_views[i], NULL);
             swapchain->image_views[i] = VK_NULL_HANDLE;
         }
 
@@ -960,7 +977,10 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
         VkSurfaceFormatKHR *formats =
             (VkSurfaceFormatKHR *)malloc(sizeof(VkSurfaceFormatKHR) * num_formats);
         vkGetPhysicalDeviceSurfaceFormatsKHR(
-            swapchain->device->physical_device, swapchain->surface, &num_formats, formats);
+            swapchain->device->physical_device,
+            swapchain->surface,
+            &num_formats,
+            formats);
 
         if (num_formats == 0)
         {
@@ -994,7 +1014,10 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
     {
         uint32_t num_present_modes = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(
-            swapchain->device->physical_device, swapchain->surface, &num_present_modes, NULL);
+            swapchain->device->physical_device,
+            swapchain->surface,
+            &num_present_modes,
+            NULL);
         VkPresentModeKHR *present_modes =
             (VkPresentModeKHR *)malloc(sizeof(VkPresentModeKHR) * num_present_modes);
         vkGetPhysicalDeviceSurfacePresentModesKHR(
@@ -1017,24 +1040,28 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
 
         for (uint32_t i = 0; i < num_present_modes; ++i)
         {
-            if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) present_mode = present_modes[i];
+            if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+                present_mode = present_modes[i];
         }
 
         for (uint32_t i = 0; i < num_present_modes; ++i)
         {
-            if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) present_mode = present_modes[i];
+            if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+                present_mode = present_modes[i];
         }
 
         free(present_modes);
     }
 
-    width = RG_CLAMP(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-    height =
-        RG_CLAMP(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+    width = RG_CLAMP(
+        width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+    height = RG_CLAMP(
+        height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
     swapchain->extent = (VkExtent2D){width, height};
 
     swapchain->num_images = capabilities.minImageCount + 1;
-    if (capabilities.maxImageCount > 0 && swapchain->num_images > capabilities.maxImageCount)
+    if (capabilities.maxImageCount > 0 &&
+        swapchain->num_images > capabilities.maxImageCount)
     {
         swapchain->num_images = capabilities.maxImageCount;
     }
@@ -1045,7 +1072,8 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
     {
         fprintf(
             stderr,
-            "Physical device does not support VK_IMAGE_USAGE_TRANSFER_DST_BIT in swapchains\n");
+            "Physical device does not support "
+            "VK_IMAGE_USAGE_TRANSFER_DST_BIT in swapchains\n");
         exit(1);
     }
 
@@ -1061,9 +1089,11 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
     create_info.imageUsage = image_usage;
 
     uint32_t queue_family_indices[2] = {
-        swapchain->device->queue_family_indices.graphics, swapchain->present_family_index};
+        swapchain->device->queue_family_indices.graphics,
+        swapchain->present_family_index};
 
-    if (swapchain->device->queue_family_indices.graphics != swapchain->present_family_index)
+    if (swapchain->device->queue_family_indices.graphics !=
+        swapchain->present_family_index)
     {
         create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
         create_info.queueFamilyIndexCount = 2;
@@ -1085,18 +1115,21 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
     VkSwapchainKHR old_swapchain = swapchain->swapchain;
     create_info.oldSwapchain = old_swapchain;
 
-    VK_CHECK(
-        vkCreateSwapchainKHR(swapchain->device->device, &create_info, NULL, &swapchain->swapchain));
+    VK_CHECK(vkCreateSwapchainKHR(
+        swapchain->device->device, &create_info, NULL, &swapchain->swapchain));
 
     vkGetSwapchainImagesKHR(
         swapchain->device->device, swapchain->swapchain, &swapchain->num_images, NULL);
     swapchain->images =
         (VkImage *)realloc(swapchain->images, sizeof(VkImage) * swapchain->num_images);
     vkGetSwapchainImagesKHR(
-        swapchain->device->device, swapchain->swapchain, &swapchain->num_images, swapchain->images);
+        swapchain->device->device,
+        swapchain->swapchain,
+        &swapchain->num_images,
+        swapchain->images);
 
-    swapchain->image_views =
-        (VkImageView *)realloc(swapchain->image_views, sizeof(VkImageView) * swapchain->num_images);
+    swapchain->image_views = (VkImageView *)realloc(
+        swapchain->image_views, sizeof(VkImageView) * swapchain->num_images);
     for (size_t i = 0; i < swapchain->num_images; i++)
     {
         VkImageViewCreateInfo view_create_info;
@@ -1116,7 +1149,10 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
         view_create_info.subresourceRange.layerCount = 1;
 
         VK_CHECK(vkCreateImageView(
-            swapchain->device->device, &view_create_info, NULL, &swapchain->image_views[i]));
+            swapchain->device->device,
+            &view_create_info,
+            NULL,
+            &swapchain->image_views[i]));
     }
 }
 // }}}
@@ -1163,9 +1199,12 @@ static VkSamplerAddressMode address_mode_to_vk(RgSamplerAddressMode value)
     switch (value)
     {
     case RG_SAMPLER_ADDRESS_MODE_REPEAT: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    case RG_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    case RG_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:
+        return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     case RG_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE:
         return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
     }
@@ -1177,8 +1216,10 @@ static VkBorderColor border_color_to_vk(RgBorderColor value)
 {
     switch (value)
     {
-    case RG_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-    case RG_BORDER_COLOR_INT_TRANSPARENT_BLACK: return VK_BORDER_COLOR_INT_TRANSPARENT_BLACK;
+    case RG_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
+        return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    case RG_BORDER_COLOR_INT_TRANSPARENT_BLACK:
+        return VK_BORDER_COLOR_INT_TRANSPARENT_BLACK;
     case RG_BORDER_COLOR_FLOAT_OPAQUE_BLACK: return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     case RG_BORDER_COLOR_INT_OPAQUE_BLACK: return VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     case RG_BORDER_COLOR_FLOAT_OPAQUE_WHITE: return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
@@ -1285,8 +1326,10 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
     ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     ci.size = buffer->info.size;
 
-    if (buffer->info.usage & RG_BUFFER_USAGE_VERTEX) ci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    if (buffer->info.usage & RG_BUFFER_USAGE_INDEX) ci.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (buffer->info.usage & RG_BUFFER_USAGE_VERTEX)
+        ci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if (buffer->info.usage & RG_BUFFER_USAGE_INDEX)
+        ci.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     if (buffer->info.usage & RG_BUFFER_USAGE_UNIFORM)
         ci.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if (buffer->info.usage & RG_BUFFER_USAGE_TRANSFER_SRC)
@@ -1343,7 +1386,8 @@ void rgBufferUnmap(RgDevice *device, RgBuffer *buffer)
     vmaUnmapMemory(device->allocator, buffer->allocation);
 }
 
-void rgBufferUpload(RgDevice *device, RgBuffer *buffer, size_t offset, size_t size, void *data)
+void rgBufferUpload(
+    RgDevice *device, RgBuffer *buffer, size_t offset, size_t size, void *data)
 {
     VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -1454,12 +1498,14 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
             ci.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         }
 
-        if (image->info.usage & RG_IMAGE_USAGE_SAMPLED) ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (image->info.usage & RG_IMAGE_USAGE_SAMPLED)
+            ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
         if (image->info.usage & RG_IMAGE_USAGE_TRANSFER_DST)
             ci.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (image->info.usage & RG_IMAGE_USAGE_TRANSFER_SRC)
             ci.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (image->info.usage & RG_IMAGE_USAGE_STORAGE) ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        if (image->info.usage & RG_IMAGE_USAGE_STORAGE)
+            ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         if (image->info.usage & RG_IMAGE_USAGE_COLOR_ATTACHMENT)
             ci.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (image->info.usage & RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)
@@ -1469,7 +1515,12 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
         alloc_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
         VK_CHECK(vmaCreateImage(
-            device->allocator, &ci, &alloc_create_info, &image->image, &image->allocation, NULL));
+            device->allocator,
+            &ci,
+            &alloc_create_info,
+            &image->image,
+            &image->allocation,
+            NULL));
     }
 
     {
@@ -1489,8 +1540,10 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
             ci.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
         }
 
-        if (image->info.aspect & RG_IMAGE_ASPECT_COLOR) image->aspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-        if (image->info.aspect & RG_IMAGE_ASPECT_DEPTH) image->aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
+        if (image->info.aspect & RG_IMAGE_ASPECT_COLOR)
+            image->aspect |= VK_IMAGE_ASPECT_COLOR_BIT;
+        if (image->info.aspect & RG_IMAGE_ASPECT_DEPTH)
+            image->aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
         if (image->info.aspect & RG_IMAGE_ASPECT_STENCIL)
             image->aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
 
@@ -1520,7 +1573,8 @@ void rgImageDestroy(RgDevice *device, RgImage *image)
     free(image);
 }
 
-void rgImageUpload(RgDevice *device, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data)
+void rgImageUpload(
+    RgDevice *device, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data)
 {
     VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -1730,7 +1784,11 @@ static void rgBufferChunkDestroy(RgBufferChunk *chunk)
 }
 
 static void rgBufferPoolInit(
-    RgDevice *device, RgBufferPool *pool, size_t chunk_size, size_t alignment, RgBufferUsage usage)
+    RgDevice *device,
+    RgBufferPool *pool,
+    size_t chunk_size,
+    size_t alignment,
+    RgBufferUsage usage)
 {
     memset(pool, 0, sizeof(*pool));
     pool->device = device;
@@ -1759,7 +1817,8 @@ static RgBufferAllocation rgBufferPoolAllocate(RgBufferPool *pool, size_t alloca
 buffer_pool_allocate_use_block:
     while (chunk)
     {
-        size_t aligned_offset = (chunk->offset + pool->alignment - 1) & ~(pool->alignment - 1);
+        size_t aligned_offset =
+            (chunk->offset + pool->alignment - 1) & ~(pool->alignment - 1);
         if (chunk->mapping != NULL && chunk->size >= aligned_offset + allocate_size)
         {
             // Found chunk that fits the allocation
@@ -1821,8 +1880,8 @@ static void rgDescriptorPoolInit(
         create_info.bindingCount = num_bindings;
         create_info.pBindings = bindings;
 
-        VK_CHECK(
-            vkCreateDescriptorSetLayout(device->device, &create_info, NULL, &pool->set_layout));
+        VK_CHECK(vkCreateDescriptorSetLayout(
+            device->device, &create_info, NULL, &pool->set_layout));
     }
 
     // Create update template
@@ -1924,7 +1983,8 @@ static void rgDescriptorPoolGrow(RgDescriptorPool *pool)
     pool_create_info.poolSizeCount = pool->num_pool_sizes;
     pool_create_info.pPoolSizes = pool->pool_sizes;
 
-    VK_CHECK(vkCreateDescriptorPool(pool->device->device, &pool_create_info, NULL, &chunk->pool));
+    VK_CHECK(vkCreateDescriptorPool(
+        pool->device->device, &pool_create_info, NULL, &chunk->pool));
 
     // Allocate descriptor sets
     VkDescriptorSetLayout set_layouts[RG_SETS_PER_PAGE];
@@ -1951,7 +2011,9 @@ static VkDescriptorSet rgDescriptorPoolAllocate(
     uint64_t descriptors_hash = 0;
     fnvHashReset(&descriptors_hash);
     fnvHashUpdate(
-        &descriptors_hash, (uint8_t *)descriptors, sizeof(RgDescriptor) * num_descriptors);
+        &descriptors_hash,
+        (uint8_t *)descriptors,
+        sizeof(RgDescriptor) * num_descriptors);
 
     RgDescriptorPoolChunk *chunk = pool->base_chunk;
     while (chunk)
@@ -2006,8 +2068,8 @@ RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info)
         pipeline->info.bindings,
         info->bindings,
         pipeline->info.num_bindings * sizeof(*pipeline->info.bindings));
-    pipeline->info.vertex_attributes =
-        malloc(pipeline->info.num_vertex_attributes * sizeof(*pipeline->info.vertex_attributes));
+    pipeline->info.vertex_attributes = malloc(
+        pipeline->info.num_vertex_attributes * sizeof(*pipeline->info.vertex_attributes));
     memcpy(
         pipeline->info.vertex_attributes,
         info->vertex_attributes,
@@ -2024,18 +2086,21 @@ RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info)
     // Create descriptor pools
     //
 
-    VkDescriptorSetLayoutBinding bindings[RG_MAX_DESCRIPTOR_SETS][RG_MAX_DESCRIPTOR_BINDINGS];
+    VkDescriptorSetLayoutBinding bindings[RG_MAX_DESCRIPTOR_SETS]
+                                         [RG_MAX_DESCRIPTOR_BINDINGS];
     uint32_t binding_counts[RG_MAX_DESCRIPTOR_SETS] = {0};
     uint32_t num_sets = 0;
 
     for (uint32_t i = 0; i < info->num_bindings; ++i)
     {
         RgPipelineBinding *binding = &info->bindings[i];
-        VkDescriptorSetLayoutBinding *vk_binding = &bindings[binding->set][binding->binding];
+        VkDescriptorSetLayoutBinding *vk_binding =
+            &bindings[binding->set][binding->binding];
         memset(vk_binding, 0, sizeof(*vk_binding));
 
         num_sets = RG_MAX(num_sets, binding->set + 1);
-        binding_counts[binding->set] = RG_MAX(binding_counts[binding->set], binding->binding + 1);
+        binding_counts[binding->set] =
+            RG_MAX(binding_counts[binding->set], binding->binding + 1);
 
         vk_binding->binding = binding->binding;
         vk_binding->descriptorType = pipeline_binding_type_to_vk(binding->type);
@@ -2133,7 +2198,8 @@ void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline)
     free(pipeline);
 }
 
-static VkPipeline rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
+static VkPipeline
+rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
 {
     uint64_t *found = rgHashmapGet(&pipeline->instances, pass->hash);
     if (found)
@@ -2162,7 +2228,8 @@ static VkPipeline rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, 
         stage->sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage->stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         stage->module = pipeline->fragment_shader;
-        stage->pName = pipeline->info.fragment_entry ? pipeline->info.fragment_entry : "main";
+        stage->pName =
+            pipeline->info.fragment_entry ? pipeline->info.fragment_entry : "main";
     }
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info;
@@ -2189,11 +2256,13 @@ static VkPipeline rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, 
         {
             attributes[i].binding = 0;
             attributes[i].location = i;
-            attributes[i].format = format_to_vk(pipeline->info.vertex_attributes[i].format);
+            attributes[i].format =
+                format_to_vk(pipeline->info.vertex_attributes[i].format);
             attributes[i].offset = pipeline->info.vertex_attributes[i].offset;
         }
 
-        vertex_input_info.vertexAttributeDescriptionCount = pipeline->info.num_vertex_attributes;
+        vertex_input_info.vertexAttributeDescriptionCount =
+            pipeline->info.num_vertex_attributes;
         vertex_input_info.pVertexAttributeDescriptions = attributes;
     }
 
@@ -2260,9 +2329,11 @@ static VkPipeline rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, 
     memset(&color_blend_attachment_enabled, 0, sizeof(color_blend_attachment_enabled));
     color_blend_attachment_enabled.blendEnable = VK_TRUE;
     color_blend_attachment_enabled.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    color_blend_attachment_enabled.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    color_blend_attachment_enabled.dstColorBlendFactor =
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     color_blend_attachment_enabled.colorBlendOp = VK_BLEND_OP_ADD;
-    color_blend_attachment_enabled.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    color_blend_attachment_enabled.srcAlphaBlendFactor =
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     color_blend_attachment_enabled.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     color_blend_attachment_enabled.alphaBlendOp = VK_BLEND_OP_ADD;
     color_blend_attachment_enabled.colorWriteMask =
@@ -2273,9 +2344,11 @@ static VkPipeline rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, 
     memset(&color_blend_attachment_disabled, 0, sizeof(color_blend_attachment_disabled));
     color_blend_attachment_disabled.blendEnable = VK_FALSE;
     color_blend_attachment_disabled.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    color_blend_attachment_disabled.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    color_blend_attachment_disabled.dstColorBlendFactor =
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     color_blend_attachment_disabled.colorBlendOp = VK_BLEND_OP_ADD;
-    color_blend_attachment_disabled.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    color_blend_attachment_disabled.srcAlphaBlendFactor =
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     color_blend_attachment_disabled.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     color_blend_attachment_disabled.alphaBlendOp = VK_BLEND_OP_ADD;
     color_blend_attachment_disabled.colorWriteMask =
@@ -2365,7 +2438,8 @@ static void allocateCmdBuffer(RgDevice *device, RgCmdBuffer *cmd_buffer)
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
-    VK_CHECK(vkAllocateCommandBuffers(device->device, &alloc_info, &cmd_buffer->cmd_buffer));
+    VK_CHECK(
+        vkAllocateCommandBuffers(device->device, &alloc_info, &cmd_buffer->cmd_buffer));
 
     rgBufferPoolInit(
         device,
@@ -2398,7 +2472,8 @@ static void freeCmdBuffer(RgDevice *device, RgCmdBuffer *cmd_buffer)
     rgBufferPoolDestroy(&cmd_buffer->vbo_pool);
     rgBufferPoolDestroy(&cmd_buffer->ibo_pool);
 
-    vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer->cmd_buffer);
+    vkFreeCommandBuffers(
+        device->device, device->graphics_command_pool, 1, &cmd_buffer->cmd_buffer);
 }
 
 static void cmdBufferBindDescriptors(RgCmdBuffer *cmd_buffer)
@@ -2440,7 +2515,8 @@ void rgCmdBindPipeline(RgCmdBuffer *cmd_buffer, RgPipeline *pipeline)
     vkCmdBindPipeline(cmd_buffer->cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, instance);
 }
 
-void rgCmdBindImage(RgCmdBuffer *cmd_buffer, uint32_t binding, uint32_t set, RgImage *image)
+void rgCmdBindImage(
+    RgCmdBuffer *cmd_buffer, uint32_t binding, uint32_t set, RgImage *image)
 {
     RgDescriptor descriptor;
     memset(&descriptor, 0, sizeof(descriptor));
@@ -2450,7 +2526,8 @@ void rgCmdBindImage(RgCmdBuffer *cmd_buffer, uint32_t binding, uint32_t set, RgI
     cmd_buffer->bound_descriptors[set][binding] = descriptor;
 }
 
-void rgCmdBindSampler(RgCmdBuffer *cmd_buffer, uint32_t binding, uint32_t set, RgSampler *sampler)
+void rgCmdBindSampler(
+    RgCmdBuffer *cmd_buffer, uint32_t binding, uint32_t set, RgSampler *sampler)
 {
     RgDescriptor descriptor;
     memset(&descriptor, 0, sizeof(descriptor));
@@ -2460,7 +2537,11 @@ void rgCmdBindSampler(RgCmdBuffer *cmd_buffer, uint32_t binding, uint32_t set, R
 }
 
 void rgCmdBindImageSampler(
-    RgCmdBuffer *cmd_buffer, uint32_t binding, uint32_t set, RgImage *image, RgSampler *sampler)
+    RgCmdBuffer *cmd_buffer,
+    uint32_t binding,
+    uint32_t set,
+    RgImage *image,
+    RgSampler *sampler)
 {
     RgDescriptor descriptor;
     memset(&descriptor, 0, sizeof(descriptor));
@@ -2491,16 +2572,21 @@ void rgCmdSetVertices(RgCmdBuffer *cmd_buffer, size_t size, void *data)
     RgBufferAllocation alloc = rgBufferPoolAllocate(&cmd_buffer->vbo_pool, size);
     memcpy(alloc.mapping, data, size);
 
-    vkCmdBindVertexBuffers(cmd_buffer->cmd_buffer, 0, 1, &alloc.buffer->buffer, &alloc.offset);
+    vkCmdBindVertexBuffers(
+        cmd_buffer->cmd_buffer, 0, 1, &alloc.buffer->buffer, &alloc.offset);
 }
 
-void rgCmdSetIndices(RgCmdBuffer *cmd_buffer, RgIndexType index_type, size_t size, void *data)
+void rgCmdSetIndices(
+    RgCmdBuffer *cmd_buffer, RgIndexType index_type, size_t size, void *data)
 {
     RgBufferAllocation alloc = rgBufferPoolAllocate(&cmd_buffer->ibo_pool, size);
     memcpy(alloc.mapping, data, size);
 
     vkCmdBindIndexBuffer(
-        cmd_buffer->cmd_buffer, alloc.buffer->buffer, alloc.offset, index_type_to_vk(index_type));
+        cmd_buffer->cmd_buffer,
+        alloc.buffer->buffer,
+        alloc.offset,
+        index_type_to_vk(index_type));
 }
 
 void rgCmdBindVertexBuffer(RgCmdBuffer *cmd_buffer, RgBuffer *buffer, size_t offset)
@@ -2524,7 +2610,12 @@ void rgCmdDraw(
 {
     cmdBufferBindDescriptors(cmd_buffer);
 
-    vkCmdDraw(cmd_buffer->cmd_buffer, vertex_count, instance_count, first_vertex, first_instance);
+    vkCmdDraw(
+        cmd_buffer->cmd_buffer,
+        vertex_count,
+        instance_count,
+        first_vertex,
+        first_instance);
 }
 
 void rgCmdDrawIndexed(
@@ -2547,7 +2638,10 @@ void rgCmdDrawIndexed(
 }
 
 void rgCmdDispatch(
-    RgCmdBuffer *cmd_buffer, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z)
+    RgCmdBuffer *cmd_buffer,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z)
 {
     cmdBufferBindDescriptors(cmd_buffer);
     vkCmdDispatch(cmd_buffer->cmd_buffer, group_count_x, group_count_y, group_count_z);
@@ -2682,7 +2776,8 @@ void rgCmdCopyImageToImage(
 // }}}
 
 // Graph {{{
-static void rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_count)
+static void
+rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_count)
 {
     memset(node, 0, sizeof(*node));
 
@@ -2709,7 +2804,8 @@ static void rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uin
         memset(&fence_info, 0, sizeof(fence_info));
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        VK_CHECK(vkCreateFence(graph->device->device, &fence_info, NULL, &node->frames[i].fence));
+        VK_CHECK(vkCreateFence(
+            graph->device->device, &fence_info, NULL, &node->frames[i].fence));
 
         uint32_t num_wait_semaphores = 0;
         VkSemaphore *wait_semaphores = NULL;
@@ -2721,13 +2817,17 @@ static void rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uin
             num_wait_semaphores++;
         }
 
-        wait_semaphores = (VkSemaphore *)malloc(sizeof(*wait_semaphores) * num_wait_semaphores);
-        wait_stages = (VkPipelineStageFlags *)malloc(sizeof(*wait_stages) * num_wait_semaphores);
+        wait_semaphores =
+            (VkSemaphore *)malloc(sizeof(*wait_semaphores) * num_wait_semaphores);
+        wait_stages =
+            (VkPipelineStageFlags *)malloc(sizeof(*wait_stages) * num_wait_semaphores);
 
         if (is_last)
         {
-            wait_semaphores[num_wait_semaphores - 1] = graph->image_available_semaphores[i];
-            wait_stages[num_wait_semaphores - 1] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            wait_semaphores[num_wait_semaphores - 1] =
+                graph->image_available_semaphores[i];
+            wait_stages[num_wait_semaphores - 1] =
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         }
 
         node->frames[i].num_wait_semaphores = num_wait_semaphores;
@@ -2742,7 +2842,8 @@ static void rgNodeDestroy(RgDevice *device, RgNode *node)
 
     for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
     {
-        vkDestroySemaphore(device->device, node->frames[i].execution_finished_semaphore, NULL);
+        vkDestroySemaphore(
+            device->device, node->frames[i].execution_finished_semaphore, NULL);
 
         vkDestroyFence(device->device, node->frames[i].fence, NULL);
 
@@ -2758,13 +2859,17 @@ static uint64_t rgRenderpassHash(VkRenderPassCreateInfo *ci)
     fnvHashReset(&hash);
 
     fnvHashUpdate(
-        &hash, (uint8_t *)ci->pAttachments, ci->attachmentCount * sizeof(*ci->pAttachments));
+        &hash,
+        (uint8_t *)ci->pAttachments,
+        ci->attachmentCount * sizeof(*ci->pAttachments));
 
     for (uint32_t i = 0; i < ci->subpassCount; i++)
     {
         const VkSubpassDescription *subpass = &ci->pSubpasses[i];
         fnvHashUpdate(
-            &hash, (uint8_t *)&subpass->pipelineBindPoint, sizeof(subpass->pipelineBindPoint));
+            &hash,
+            (uint8_t *)&subpass->pipelineBindPoint,
+            sizeof(subpass->pipelineBindPoint));
 
         if (subpass->pColorAttachments)
         {
@@ -2776,7 +2881,9 @@ static uint64_t rgRenderpassHash(VkRenderPassCreateInfo *ci)
     }
 
     fnvHashUpdate(
-        &hash, (uint8_t *)ci->pDependencies, ci->dependencyCount * sizeof(*ci->pDependencies));
+        &hash,
+        (uint8_t *)ci->pDependencies,
+        ci->dependencyCount * sizeof(*ci->pDependencies));
 
     return hash;
 }
@@ -2836,7 +2943,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         backbuffer->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         backbuffer->finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-        VkAttachmentReference *backbuffer_ref = &color_attachment_refs[num_color_attachment_refs++];
+        VkAttachmentReference *backbuffer_ref =
+            &color_attachment_refs[num_color_attachment_refs++];
         backbuffer_ref->attachment = num_rp_attachments - 1;
         backbuffer_ref->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
@@ -2850,7 +2958,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         case RG_RESOURCE_COLOR_ATTACHMENT: {
             VkAttachmentDescription *attachment = &rp_attachments[num_rp_attachments++];
             attachment->format = format_to_vk(resource->image_info.format);
-            attachment->samples = (VkSampleCountFlagBits)resource->image_info.sample_count;
+            attachment->samples =
+                (VkSampleCountFlagBits)resource->image_info.sample_count;
             attachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             attachment->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             attachment->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -2879,7 +2988,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
             pass->depth_attachment_index = num_rp_attachments - 1;
             depth_stencil_attachment_ref.attachment = num_rp_attachments - 1;
-            depth_stencil_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth_stencil_attachment_ref.layout =
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
             break;
         }
@@ -2917,7 +3027,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     renderpass_ci.dependencyCount = 1;
     renderpass_ci.pDependencies = &dependency;
 
-    VK_CHECK(vkCreateRenderPass(graph->device->device, &renderpass_ci, NULL, &pass->renderpass));
+    VK_CHECK(vkCreateRenderPass(
+        graph->device->device, &renderpass_ci, NULL, &pass->renderpass));
 
     pass->extent = graph->swapchain.extent;
     pass->hash = rgRenderpassHash(&renderpass_ci);
@@ -2956,8 +3067,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         create_info.height = pass->extent.height;
         create_info.layers = 1;
 
-        VK_CHECK(
-            vkCreateFramebuffer(graph->device->device, &create_info, NULL, &pass->framebuffers[i]));
+        VK_CHECK(vkCreateFramebuffer(
+            graph->device->device, &create_info, NULL, &pass->framebuffers[i]));
     }
 }
 
@@ -3027,13 +3138,41 @@ void rgGraphResize(RgGraph *graph)
                 rgImageDestroy(graph->device, resource->image);
             }
 
-            if (graph->has_swapchain)
+            RgImageInfo image_info;
+            memset(&image_info, 0, sizeof(image_info));
+
+            image_info.depth = resource->image_info.depth;
+            image_info.sample_count = resource->image_info.sample_count;
+            image_info.mip_count = resource->image_info.mip_count;
+            image_info.layer_count = resource->image_info.layer_count;
+            image_info.usage = resource->image_info.usage;
+            image_info.aspect = resource->image_info.aspect;
+            image_info.format = resource->image_info.format;
+
+            switch (resource->image_info.scaling_mode)
             {
-                resource->image_info.width = graph->swapchain.extent.width;
-                resource->image_info.height = graph->swapchain.extent.height;
+            case RG_GRAPH_IMAGE_SCALING_MODE_ABSOLUTE: {
+                image_info.width = (uint32_t)resource->image_info.width;
+                image_info.height = (uint32_t)resource->image_info.height;
+                break;
+            }
+            case RG_GRAPH_IMAGE_SCALING_MODE_RELATIVE: {
+                assert(resource->image_info.width <= 1.0);
+                assert(resource->image_info.height <= 1.0);
+
+                assert(graph->has_swapchain);
+                image_info.width = (uint32_t)(
+                    resource->image_info.width * (float)graph->swapchain.extent.width);
+                image_info.height = (uint32_t)(
+                    resource->image_info.height * (float)graph->swapchain.extent.height);
+                break;
+            }
             }
 
-            resource->image = rgImageCreate(graph->device, &resource->image_info);
+            assert(image_info.width > 0);
+            assert(image_info.height > 0);
+
+            resource->image = rgImageCreate(graph->device, &image_info);
             break;
         }
         }
@@ -3092,7 +3231,9 @@ RgResource *rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
 
         switch (resource->image_info.format)
         {
-        case RG_FORMAT_D32_SFLOAT: resource->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH; break;
+        case RG_FORMAT_D32_SFLOAT:
+            resource->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
+            break;
 
         case RG_FORMAT_D24_UNORM_S8_UINT:
             resource->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
@@ -3143,7 +3284,10 @@ void rgGraphBuild(RgGraph *graph)
         memset(&semaphore_info, 0, sizeof(semaphore_info));
         semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         VK_CHECK(vkCreateSemaphore(
-            graph->device->device, &semaphore_info, NULL, &graph->image_available_semaphores[i]));
+            graph->device->device,
+            &semaphore_info,
+            NULL,
+            &graph->image_available_semaphores[i]));
     }
 
     assert(graph->num_passes > 0);
@@ -3172,7 +3316,8 @@ void rgGraphDestroy(RgGraph *graph)
 
     for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
     {
-        vkDestroySemaphore(graph->device->device, graph->image_available_semaphores[i], NULL);
+        vkDestroySemaphore(
+            graph->device->device, graph->image_available_semaphores[i], NULL);
     }
 
     for (uint32_t i = 0; i < graph->num_nodes; ++i)
@@ -3251,10 +3396,12 @@ void rgGraphExecute(RgGraph *graph)
             VK_CHECK(res);
         }
 
-        VK_CHECK(vkResetFences(graph->device->device, 1, &node->frames[current_frame].fence));
+        VK_CHECK(
+            vkResetFences(graph->device->device, 1, &node->frames[current_frame].fence));
 
         uint32_t num_signal_semaphores = 1;
-        VkSemaphore *signal_semaphores = &node->frames[current_frame].execution_finished_semaphore;
+        VkSemaphore *signal_semaphores =
+            &node->frames[current_frame].execution_finished_semaphore;
 
         RgCmdBuffer *cmd_buffer = &node->frames[current_frame].cmd_buffer;
 
@@ -3268,7 +3415,8 @@ void rgGraphExecute(RgGraph *graph)
         {
             RgPass *pass = &graph->passes[node->pass_indices[j]];
 
-            pass->current_framebuffer = pass->framebuffers[graph->swapchain.current_image_index];
+            pass->current_framebuffer =
+                pass->framebuffers[graph->swapchain.current_image_index];
 
             uint32_t num_clear_values = pass->num_attachments;
             VkClearValue clear_values[RG_MAX_ATTACHMENTS];
@@ -3337,7 +3485,10 @@ void rgGraphExecute(RgGraph *graph)
         submit.pSignalSemaphores = signal_semaphores;
 
         VK_CHECK(vkQueueSubmit(
-            graph->device->graphics_queue, 1, &submit, node->frames[current_frame].fence));
+            graph->device->graphics_queue,
+            1,
+            &submit,
+            node->frames[current_frame].fence));
     }
 
     RgNode *last_node = &graph->nodes[graph->num_nodes - 1];
@@ -3346,7 +3497,8 @@ void rgGraphExecute(RgGraph *graph)
     memset(&present_info, 0, sizeof(present_info));
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &last_node->frames[current_frame].execution_finished_semaphore;
+    present_info.pWaitSemaphores =
+        &last_node->frames[current_frame].execution_finished_semaphore;
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &graph->swapchain.swapchain;
     present_info.pImageIndices = &graph->swapchain.current_image_index;
