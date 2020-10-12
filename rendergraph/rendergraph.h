@@ -252,6 +252,7 @@ typedef enum RgResourceType
 {
     RG_RESOURCE_COLOR_ATTACHMENT,
     RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT,
+    RG_RESOURCE_BUFFER,
 } RgResourceType;
 
 typedef enum RgGraphImageScalingMode
@@ -338,6 +339,8 @@ void rgGraphBuild(RgGraph *graph);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph);
 void rgGraphExecute(RgGraph *graph);
+RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource);
+RgImage *rgGraphGetImage(RgGraph *graph, RgResourceRef resource);
 
 void rgCmdBindPipeline(RgCmdBuffer *cb, RgPipeline *pipeline);
 void rgCmdBindImage(RgCmdBuffer *cb, uint32_t binding, uint32_t set, RgImage *image);

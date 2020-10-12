@@ -3042,6 +3042,10 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
             break;
         }
+
+        case RG_RESOURCE_BUFFER: {
+            break;
+        }
         }
     }
 
@@ -3102,6 +3106,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
             case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
                 arrPush(&views, resource->image->view);
                 break;
+            case RG_RESOURCE_BUFFER: break;
             }
         }
 
@@ -3235,6 +3240,11 @@ void rgGraphResize(RgGraph *graph)
             resource->image = rgImageCreate(graph->device, &image_info);
             break;
         }
+
+        case RG_RESOURCE_BUFFER:
+            if (resource->buffer) break;
+            resource->buffer = rgBufferCreate(graph->device, &resource->buffer_info);
+            break;
         }
     }
 
@@ -3313,6 +3323,8 @@ RgResourceRef rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
             RG_IMAGE_USAGE_SAMPLED | RG_IMAGE_USAGE_COLOR_ATTACHMENT;
         resource.image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
         break;
+
+    case RG_RESOURCE_BUFFER: break;
     }
 
     arrPush(&graph->resources, resource);
@@ -3411,6 +3423,13 @@ void rgGraphDestroy(RgGraph *graph)
                 graph->resources.ptr[i].image = NULL;
             }
             break;
+        case RG_RESOURCE_BUFFER:
+            if (graph->resources.ptr[i].buffer)
+            {
+                rgBufferDestroy(graph->device, graph->resources.ptr[i].buffer);
+                graph->resources.ptr[i].buffer = NULL;
+            }
+            break;
         }
     }
 
@@ -3502,7 +3521,8 @@ void rgGraphExecute(RgGraph *graph)
 
             if (pass->has_depth_attachment)
             {
-                pass->clear_values[pass->depth_attachment_index].depthStencil.depth = 1.0f;
+                pass->clear_values[pass->depth_attachment_index].depthStencil.depth =
+                    1.0f;
                 pass->clear_values[pass->depth_attachment_index].depthStencil.stencil = 0;
             }
 
@@ -3594,6 +3614,43 @@ void rgGraphExecute(RgGraph *graph)
     }
 
     graph->current_frame = (graph->current_frame + 1) % RG_FRAMES_IN_FLIGHT;
+}
+
+RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource_ref)
+{
+    RgResource *resource = &graph->resources.ptr[resource_ref.index];
+
+    switch (resource->type)
+    {
+    case RG_RESOURCE_BUFFER: {
+        assert(resource->buffer);
+        return resource->buffer;
+    }
+
+    default: break;
+    }
+
+    assert(0);
+    return NULL;
+}
+
+RgImage *rgGraphGetImage(RgGraph *graph, RgResourceRef resource_ref)
+{
+    RgResource *resource = &graph->resources.ptr[resource_ref.index];
+
+    switch (resource->type)
+    {
+    case RG_RESOURCE_COLOR_ATTACHMENT:
+    case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT: {
+        assert(resource->image);
+        return resource->image;
+    }
+
+    default: break;
+    }
+
+    assert(0);
+    return NULL;
 }
 // }}}
 
