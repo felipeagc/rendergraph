@@ -31,7 +31,6 @@
 enum {
     RG_FRAMES_IN_FLIGHT = 2,
     RG_MAX_SHADER_STAGES = 4,
-    RG_MAX_ATTACHMENTS = 16,
     RG_MAX_COLOR_ATTACHMENTS = 16,
     RG_MAX_VERTEX_ATTRIBUTES = 8,
     RG_MAX_DESCRIPTOR_SETS = 8,
@@ -39,10 +38,6 @@ enum {
     RG_MAX_DESCRIPTOR_TYPES = 8,
     RG_SETS_PER_PAGE = 32,
     RG_BUFFER_POOL_CHUNK_SIZE = 65536,
-
-    RG_MAX_GRAPH_PASSES = 8,
-    RG_MAX_GRAPH_RESOURCES = 8,
-    RG_MAX_PASS_RESOURCES = 8,
 };
 
 #ifdef RENDERGRAPH_FEATURE_VALIDATION
@@ -82,6 +77,52 @@ static void fnvHashUpdate(uint64_t *hash, uint8_t *bytes, size_t count)
         *hash = ((*hash) * 1099511628211) ^ bytes[i];
     }
 }
+// }}}
+
+// Array {{{
+#define ARRAY_INITIAL_CAPACITY 16
+
+static void *arrayGrow(void *ptr, size_t *cap, size_t wanted_cap, size_t item_size)
+{
+    if (!ptr)
+    {
+        size_t desired_cap = ((wanted_cap == 0) ? ARRAY_INITIAL_CAPACITY : wanted_cap);
+        *cap = desired_cap;
+        return malloc(item_size * desired_cap);
+    }
+
+    size_t desired_cap = ((wanted_cap == 0) ? ((*cap) * 2) : wanted_cap);
+    *cap = desired_cap;
+    return realloc(ptr, (desired_cap * item_size));
+}
+
+#define ARRAY_OF(type)                                                                   \
+    struct                                                                               \
+    {                                                                                    \
+        type *ptr;                                                                       \
+        size_t len;                                                                      \
+        size_t cap;                                                                      \
+    }
+
+#define arrFull(a) ((a)->ptr ? ((a)->len >= (a)->cap) : 1)
+
+#define arrLast(a) (&(a).ptr[(a).len - 1])
+
+#define arrLength(a) ((a).len)
+
+#define arrPush(a, item)                                                                 \
+    (arrFull(a) ? (a)->ptr = arrayGrow((a)->ptr, &(a)->cap, 0, sizeof(*((a)->ptr))) : 0, \
+     (a)->ptr[(a)->len++] = (item))
+
+#define arrPop(a) ((a)->len > 0 ? ((a)->len--, &(a)->ptr[(a)->len]) : NULL)
+
+#define arrFree(a)                                                                       \
+    do                                                                                   \
+    {                                                                                    \
+        (a)->ptr = NULL;                                                                 \
+        (a)->len = 0;                                                                    \
+        (a)->cap = 0;                                                                    \
+    } while (0)
 // }}}
 
 // Hashmap {{{
@@ -334,11 +375,10 @@ struct RgPass
     VkFramebuffer *framebuffers;
     uint32_t num_framebuffers;
 
-    uint32_t num_outputs;
-    uint32_t outputs[RG_MAX_PASS_RESOURCES];
+    ARRAY_OF(uint32_t) outputs;
+    ARRAY_OF(uint32_t) inputs;
 
-    uint32_t num_inputs;
-    uint32_t inputs[RG_MAX_PASS_RESOURCES];
+    VkClearValue *clear_values; // array with length equal to num_attachments
 
     VkFramebuffer current_framebuffer;
 
@@ -358,20 +398,14 @@ struct RgGraph
     RgNode *nodes;
     uint32_t num_nodes;
 
-    RgPass passes[RG_MAX_GRAPH_PASSES];
-    uint32_t num_passes;
-
-    RgResource resources[RG_MAX_GRAPH_RESOURCES];
-    uint32_t num_resources;
+    ARRAY_OF(RgPass) passes;
+    ARRAY_OF(RgResource) resources;
 
     VkSemaphore image_available_semaphores[RG_FRAMES_IN_FLIGHT];
     uint32_t current_frame;
 
-    VkBufferMemoryBarrier *buffer_barriers;
-    uint32_t num_buffer_barriers;
-
-    VkImageMemoryBarrier *image_barriers;
-    uint32_t num_image_barriers;
+    ARRAY_OF(VkBufferMemoryBarrier) buffer_barriers;
+    ARRAY_OF(VkImageMemoryBarrier) image_barriers;
 };
 
 struct RgNode
@@ -472,6 +506,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_message_callback(
     const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
     void *pUserData)
 {
+    (void)messageSeverity;
+    (void)messageTypes;
+    (void)pUserData;
     fprintf(stderr, "Validation layer: %s\n", pCallbackData->pMessage);
 
     return VK_FALSE;
@@ -2926,13 +2963,11 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         (VkFramebuffer *)malloc(sizeof(VkFramebuffer) * pass->num_framebuffers);
     memset(pass->framebuffers, 0, sizeof(VkFramebuffer) * pass->num_framebuffers);
 
-    uint32_t num_rp_attachments = 0;
-    VkAttachmentDescription rp_attachments[RG_MAX_ATTACHMENTS];
-    memset(rp_attachments, 0, sizeof(rp_attachments));
+    ARRAY_OF(VkAttachmentDescription) rp_attachments;
+    memset(&rp_attachments, 0, sizeof(rp_attachments));
 
-    uint32_t num_color_attachment_refs = 0;
-    VkAttachmentReference color_attachment_refs[RG_MAX_ATTACHMENTS];
-    memset(color_attachment_refs, 0, sizeof(color_attachment_refs));
+    ARRAY_OF(VkAttachmentReference) color_attachment_refs;
+    memset(&color_attachment_refs, 0, sizeof(color_attachment_refs));
 
     bool has_depth_stencil = false;
     VkAttachmentReference depth_stencil_attachment_ref;
@@ -2940,61 +2975,68 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
     if (pass->is_backbuffer)
     {
-        VkAttachmentDescription *backbuffer = &rp_attachments[num_rp_attachments++];
-        backbuffer->format = graph->swapchain.image_format;
-        backbuffer->samples = VK_SAMPLE_COUNT_1_BIT;
-        backbuffer->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        backbuffer->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        backbuffer->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        backbuffer->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        backbuffer->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        backbuffer->finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        VkAttachmentDescription backbuffer;
+        memset(&backbuffer, 0, sizeof(backbuffer));
+        backbuffer.format = graph->swapchain.image_format;
+        backbuffer.samples = VK_SAMPLE_COUNT_1_BIT;
+        backbuffer.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        backbuffer.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        backbuffer.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        backbuffer.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        backbuffer.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        backbuffer.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        arrPush(&rp_attachments, backbuffer);
 
-        VkAttachmentReference *backbuffer_ref =
-            &color_attachment_refs[num_color_attachment_refs++];
-        backbuffer_ref->attachment = num_rp_attachments - 1;
-        backbuffer_ref->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference backbuffer_ref;
+        memset(&backbuffer_ref, 0, sizeof(backbuffer_ref));
+        backbuffer_ref.attachment = arrLength(rp_attachments) - 1;
+        backbuffer_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        arrPush(&color_attachment_refs, backbuffer_ref);
     }
 
-    for (uint32_t i = 0; i < pass->num_outputs; ++i)
+    for (uint32_t i = 0; i < pass->outputs.len; ++i)
     {
-        RgResource *resource = &graph->resources[pass->outputs[i]];
+        RgResource *resource = &graph->resources.ptr[pass->outputs.ptr[i]];
 
         switch (resource->type)
         {
         case RG_RESOURCE_COLOR_ATTACHMENT: {
-            VkAttachmentDescription *attachment = &rp_attachments[num_rp_attachments++];
-            attachment->format = format_to_vk(resource->image_info.format);
-            attachment->samples =
-                (VkSampleCountFlagBits)resource->image_info.sample_count;
-            attachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            attachment->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            attachment->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            attachment->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            attachment->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            attachment->finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkAttachmentDescription attachment;
+            memset(&attachment, 0, sizeof(attachment));
+            attachment.format = format_to_vk(resource->image_info.format);
+            attachment.samples = (VkSampleCountFlagBits)resource->image_info.sample_count;
+            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            attachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            arrPush(&rp_attachments, attachment);
 
-            VkAttachmentReference *attachment_ref =
-                &color_attachment_refs[num_color_attachment_refs++];
-            attachment_ref->attachment = num_rp_attachments - 1;
-            attachment_ref->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            VkAttachmentReference attachment_ref;
+            memset(&attachment_ref, 0, sizeof(attachment_ref));
+            attachment_ref.attachment = arrLength(rp_attachments) - 1;
+            attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            arrPush(&color_attachment_refs, attachment_ref);
             break;
         }
         case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT: {
             has_depth_stencil = true;
 
-            VkAttachmentDescription *attachment = &rp_attachments[num_rp_attachments++];
-            attachment->format = format_to_vk(resource->image_info.format);
-            attachment->samples = VK_SAMPLE_COUNT_1_BIT;
-            attachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            attachment->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            attachment->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            attachment->stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-            attachment->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            attachment->finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            VkAttachmentDescription attachment;
+            memset(&attachment, 0, sizeof(attachment));
+            attachment.format = format_to_vk(resource->image_info.format);
+            attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            arrPush(&rp_attachments, attachment);
 
-            pass->depth_attachment_index = num_rp_attachments - 1;
-            depth_stencil_attachment_ref.attachment = num_rp_attachments - 1;
+            pass->depth_attachment_index = arrLength(rp_attachments) - 1;
+            depth_stencil_attachment_ref.attachment = arrLength(rp_attachments) - 1;
             depth_stencil_attachment_ref.layout =
                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
@@ -3006,8 +3048,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     VkSubpassDescription subpass;
     memset(&subpass, 0, sizeof(subpass));
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = num_color_attachment_refs;
-    subpass.pColorAttachments = color_attachment_refs;
+    subpass.colorAttachmentCount = color_attachment_refs.len;
+    subpass.pColorAttachments = color_attachment_refs.ptr;
 
     if (has_depth_stencil)
     {
@@ -3027,8 +3069,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     VkRenderPassCreateInfo renderpass_ci;
     memset(&renderpass_ci, 0, sizeof(renderpass_ci));
     renderpass_ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderpass_ci.attachmentCount = num_rp_attachments;
-    renderpass_ci.pAttachments = rp_attachments;
+    renderpass_ci.attachmentCount = rp_attachments.len;
+    renderpass_ci.pAttachments = rp_attachments.ptr;
     renderpass_ci.subpassCount = 1;
     renderpass_ci.pSubpasses = &subpass;
     renderpass_ci.dependencyCount = 1;
@@ -3042,24 +3084,23 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
     for (uint32_t i = 0; i < pass->num_framebuffers; ++i)
     {
-        uint32_t num_views = 0;
-        VkImageView views[RG_MAX_ATTACHMENTS];
-        memset(views, 0, sizeof(views));
+        ARRAY_OF(VkImageView) views;
+        memset(&views, 0, sizeof(views));
 
         if (pass->is_backbuffer)
         {
-            views[num_views++] = graph->swapchain.image_views[i];
+            arrPush(&views, graph->swapchain.image_views[i]);
         }
 
-        for (uint32_t i = 0; i < pass->num_outputs; ++i)
+        for (uint32_t i = 0; i < pass->outputs.len; ++i)
         {
-            RgResource *resource = &graph->resources[pass->outputs[i]];
+            RgResource *resource = &graph->resources.ptr[pass->outputs.ptr[i]];
 
             switch (resource->type)
             {
             case RG_RESOURCE_COLOR_ATTACHMENT:
             case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
-                views[num_views++] = resource->image->view;
+                arrPush(&views, resource->image->view);
                 break;
             }
         }
@@ -3068,15 +3109,20 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         memset(&create_info, 0, sizeof(create_info));
         create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         create_info.renderPass = pass->renderpass;
-        create_info.attachmentCount = num_views;
-        create_info.pAttachments = views;
+        create_info.attachmentCount = views.len;
+        create_info.pAttachments = views.ptr;
         create_info.width = pass->extent.width;
         create_info.height = pass->extent.height;
         create_info.layers = 1;
 
         VK_CHECK(vkCreateFramebuffer(
             graph->device->device, &create_info, NULL, &pass->framebuffers[i]));
+
+        arrFree(&views);
     }
+
+    arrFree(&rp_attachments);
+    arrFree(&color_attachment_refs);
 }
 
 static void rgPassBuild(RgGraph *graph, RgPass *pass)
@@ -3087,9 +3133,9 @@ static void rgPassBuild(RgGraph *graph, RgPass *pass)
         pass->num_attachments++;
     }
 
-    for (uint32_t i = 0; i < pass->num_outputs; ++i)
+    for (uint32_t i = 0; i < pass->outputs.len; ++i)
     {
-        RgResource *resource = &graph->resources[pass->outputs[i]];
+        RgResource *resource = &graph->resources.ptr[pass->outputs.ptr[i]];
         switch (resource->type)
         {
         case RG_RESOURCE_COLOR_ATTACHMENT:
@@ -3103,6 +3149,9 @@ static void rgPassBuild(RgGraph *graph, RgPass *pass)
         default: break;
         }
     }
+
+    pass->clear_values = malloc(sizeof(VkClearValue) * pass->num_attachments);
+    memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
 }
 
 static void rgPassDestroy(RgDevice *device, RgPass *pass)
@@ -3127,15 +3176,19 @@ static void rgPassDestroy(RgDevice *device, RgPass *pass)
     {
         free(pass->framebuffers);
     }
+
+    arrFree(&pass->inputs);
+    arrFree(&pass->outputs);
+    free(pass->clear_values);
 }
 
 void rgGraphResize(RgGraph *graph)
 {
     rgSwapchainResize(&graph->swapchain);
 
-    for (uint32_t i = 0; i < graph->num_resources; ++i)
+    for (uint32_t i = 0; i < graph->resources.len; ++i)
     {
-        RgResource *resource = &graph->resources[i];
+        RgResource *resource = &graph->resources.ptr[i];
         switch (resource->type)
         {
         case RG_RESOURCE_COLOR_ATTACHMENT:
@@ -3185,9 +3238,9 @@ void rgGraphResize(RgGraph *graph)
         }
     }
 
-    for (uint32_t i = 0; i < graph->num_passes; ++i)
+    for (uint32_t i = 0; i < graph->passes.len; ++i)
     {
-        rgPassResize(graph, &graph->passes[i]);
+        rgPassResize(graph, &graph->passes.ptr[i]);
     }
 }
 
@@ -3211,15 +3264,15 @@ RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *
 RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback)
 {
     RgPassRef ref;
-    ref.index = graph->num_passes++;
+    ref.index = graph->passes.len;
 
-    assert(ref.index < RG_MAX_GRAPH_PASSES);
+    RgPass pass;
+    memset(&pass, 0, sizeof(pass));
 
-    RgPass *pass = &graph->passes[ref.index];
-    memset(pass, 0, sizeof(*pass));
+    pass.graph = graph;
+    pass.callback = callback;
 
-    pass->graph = graph;
-    pass->callback = callback;
+    arrPush(&graph->passes, pass);
 
     return ref;
 }
@@ -3227,29 +3280,27 @@ RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback)
 RgResourceRef rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
 {
     RgResourceRef ref;
-    ref.index = graph->num_resources;
+    ref.index = graph->resources.len;
 
-    RgResource *resource = &graph->resources[graph->num_resources];
-    assert(resource < (&graph->resources[RG_MAX_GRAPH_RESOURCES]));
-    graph->num_resources++;
-    memset(resource, 0, sizeof(*resource));
+    RgResource resource;
+    memset(&resource, 0, sizeof(resource));
 
-    resource->type = info->type;
-    switch (resource->type)
+    resource.type = info->type;
+    switch (resource.type)
     {
     case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
-        resource->image_info = info->image;
-        resource->image_info.usage |= RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
+        resource.image_info = info->image;
+        resource.image_info.usage |= RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
 
-        switch (resource->image_info.format)
+        switch (resource.image_info.format)
         {
         case RG_FORMAT_D32_SFLOAT:
-            resource->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
+            resource.image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
             break;
 
         case RG_FORMAT_D24_UNORM_S8_UINT:
-            resource->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
-            resource->image_info.aspect |= RG_IMAGE_ASPECT_STENCIL;
+            resource.image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
+            resource.image_info.aspect |= RG_IMAGE_ASPECT_STENCIL;
             break;
 
         default: assert(0);
@@ -3257,28 +3308,28 @@ RgResourceRef rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
         break;
 
     case RG_RESOURCE_COLOR_ATTACHMENT:
-        resource->image_info = info->image;
-        resource->image_info.usage |=
+        resource.image_info = info->image;
+        resource.image_info.usage |=
             RG_IMAGE_USAGE_SAMPLED | RG_IMAGE_USAGE_COLOR_ATTACHMENT;
-        resource->image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
+        resource.image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
         break;
     }
+
+    arrPush(&graph->resources, resource);
 
     return ref;
 }
 
 void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref)
 {
-    RgPass *pass = &graph->passes[pass_ref.index];
-    assert(pass->num_inputs < RG_MAX_PASS_RESOURCES);
-    pass->inputs[pass->num_inputs++] = resource_ref.index;
+    RgPass *pass = &graph->passes.ptr[pass_ref.index];
+    arrPush(&pass->inputs, resource_ref.index);
 }
 
 void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref)
 {
-    RgPass *pass = &graph->passes[pass_ref.index];
-    assert(pass->num_outputs < RG_MAX_PASS_RESOURCES);
-    pass->outputs[pass->num_outputs++] = resource_ref.index;
+    RgPass *pass = &graph->passes.ptr[pass_ref.index];
+    arrPush(&pass->outputs, resource_ref.index);
 }
 
 void rgGraphBuild(RgGraph *graph)
@@ -3295,17 +3346,17 @@ void rgGraphBuild(RgGraph *graph)
             &graph->image_available_semaphores[i]));
     }
 
-    assert(graph->num_passes > 0);
+    assert(graph->passes.len > 0);
 
     graph->num_nodes = 1;
     graph->nodes = (RgNode *)malloc(sizeof(*graph->nodes) * graph->num_nodes);
     for (uint32_t i = 0; i < graph->num_nodes; ++i)
     {
         // TODO: split passes across multiple nodes when needed (e.g. compute)
-        uint32_t *pass_indices = malloc(sizeof(uint32_t) * graph->num_passes);
-        uint32_t num_passes = graph->num_passes;
+        uint32_t *pass_indices = malloc(sizeof(uint32_t) * graph->passes.len);
+        uint32_t num_passes = graph->passes.len;
 
-        for (uint32_t i = 0; i < graph->num_passes; ++i)
+        for (uint32_t i = 0; i < graph->passes.len; ++i)
         {
             pass_indices[i] = i;
         }
@@ -3313,13 +3364,13 @@ void rgGraphBuild(RgGraph *graph)
         rgNodeInit(graph, &graph->nodes[i], pass_indices, num_passes);
     }
 
-    for (uint32_t i = 0; i < graph->num_passes; ++i)
+    for (uint32_t i = 0; i < graph->passes.len; ++i)
     {
-        if (i == (graph->num_passes - 1) && graph->has_swapchain)
+        if (i == (graph->passes.len - 1) && graph->has_swapchain)
         {
-            graph->passes[i].is_backbuffer = true;
+            graph->passes.ptr[i].is_backbuffer = true;
         }
-        rgPassBuild(graph, &graph->passes[i]);
+        rgPassBuild(graph, &graph->passes.ptr[i]);
     }
 
     rgGraphResize(graph);
@@ -3343,21 +3394,21 @@ void rgGraphDestroy(RgGraph *graph)
     }
     free(graph->nodes);
 
-    for (uint32_t i = 0; i < graph->num_passes; ++i)
+    for (uint32_t i = 0; i < graph->passes.len; ++i)
     {
-        rgPassDestroy(graph->device, &graph->passes[i]);
+        rgPassDestroy(graph->device, &graph->passes.ptr[i]);
     }
 
-    for (uint32_t i = 0; i < graph->num_resources; ++i)
+    for (uint32_t i = 0; i < graph->resources.len; ++i)
     {
-        switch (graph->resources[i].type)
+        switch (graph->resources.ptr[i].type)
         {
         case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
         case RG_RESOURCE_COLOR_ATTACHMENT:
-            if (graph->resources[i].image)
+            if (graph->resources.ptr[i].image)
             {
-                rgImageDestroy(graph->device, graph->resources[i].image);
-                graph->resources[i].image = NULL;
+                rgImageDestroy(graph->device, graph->resources.ptr[i].image);
+                graph->resources.ptr[i].image = NULL;
             }
             break;
         }
@@ -3367,6 +3418,11 @@ void rgGraphDestroy(RgGraph *graph)
     {
         rgSwapchainDestroy(graph->device, &graph->swapchain);
     }
+
+    arrFree(&graph->buffer_barriers);
+    arrFree(&graph->image_barriers);
+    arrFree(&graph->passes);
+    arrFree(&graph->resources);
 
     free(graph);
 }
@@ -3430,7 +3486,7 @@ void rgGraphExecute(RgGraph *graph)
 
         for (uint32_t j = 0; j < node->num_pass_indices; ++j)
         {
-            RgPass *pass = &graph->passes[node->pass_indices[j]];
+            RgPass *pass = &graph->passes.ptr[node->pass_indices[j]];
 
             if (pass->is_backbuffer)
             {
@@ -3442,14 +3498,12 @@ void rgGraphExecute(RgGraph *graph)
                 pass->current_framebuffer = pass->framebuffers[0];
             }
 
-            uint32_t num_clear_values = pass->num_attachments;
-            VkClearValue clear_values[RG_MAX_ATTACHMENTS];
-            memset(clear_values, 0, sizeof(clear_values));
+            memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
 
             if (pass->has_depth_attachment)
             {
-                clear_values[pass->depth_attachment_index].depthStencil.depth = 1.0f;
-                clear_values[pass->depth_attachment_index].depthStencil.stencil = 0;
+                pass->clear_values[pass->depth_attachment_index].depthStencil.depth = 1.0f;
+                pass->clear_values[pass->depth_attachment_index].depthStencil.stencil = 0;
             }
 
             VkRenderPassBeginInfo render_pass_info;
@@ -3459,8 +3513,8 @@ void rgGraphExecute(RgGraph *graph)
             render_pass_info.framebuffer = pass->current_framebuffer;
             render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
             render_pass_info.renderArea.extent = pass->extent;
-            render_pass_info.clearValueCount = num_clear_values;
-            render_pass_info.pClearValues = clear_values;
+            render_pass_info.clearValueCount = pass->num_attachments;
+            render_pass_info.pClearValues = pass->clear_values;
 
             cmd_buffer->current_pass = pass;
             vkCmdBeginRenderPass(
