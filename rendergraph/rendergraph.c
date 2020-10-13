@@ -106,10 +106,6 @@ static void *arrayGrow(void *ptr, size_t *cap, size_t wanted_cap, size_t item_si
 
 #define arrFull(a) ((a)->ptr ? ((a)->len >= (a)->cap) : 1)
 
-#define arrLast(a) (&(a).ptr[(a).len - 1])
-
-#define arrLength(a) ((a).len)
-
 #define arrPush(a, item)                                                                 \
     (arrFull(a) ? (a)->ptr = arrayGrow((a)->ptr, &(a)->cap, 0, sizeof(*((a)->ptr))) : 0, \
      (a)->ptr[(a)->len++] = (item))
@@ -343,20 +339,44 @@ typedef struct RgSwapchain
     uint32_t current_image_index;
 } RgSwapchain;
 
+typedef struct RgGraphImageInfoInternal
+{
+    RgGraphImageScalingMode scaling_mode;
+	float width;
+	float height;
+	uint32_t depth;
+	uint32_t sample_count;
+	uint32_t mip_count;
+	uint32_t layer_count;
+	RgFlags aspect;
+	RgFlags usage;
+	RgFormat format;
+} RgGraphImageInfoInternal;
+
 typedef struct RgResource
 {
     RgResourceType type;
     union
     {
-        RgGraphImageInfo image_info;
+        RgGraphImageInfoInternal image_info;
         RgBufferInfo buffer_info;
     };
-    union
+
+    struct
     {
-        RgImage *image;
-        RgBuffer *buffer;
-    };
+        union
+        {
+            RgImage *image;
+            RgBuffer *buffer;
+        };
+    } frames[RG_FRAMES_IN_FLIGHT];
 } RgResource;
+
+typedef struct RgPassResource
+{
+    uint32_t index;
+    RgResourceUsage usage;
+} RgPassResource;
 
 struct RgPass
 {
@@ -372,11 +392,14 @@ struct RgPass
     bool has_depth_attachment;
     uint32_t depth_attachment_index;
 
-    VkFramebuffer *framebuffers;
     uint32_t num_framebuffers;
+    struct
+    {
+        VkFramebuffer *framebuffers;
+    } frames[RG_FRAMES_IN_FLIGHT];
 
-    ARRAY_OF(uint32_t) outputs;
-    ARRAY_OF(uint32_t) inputs;
+    ARRAY_OF(RgPassResource) outputs;
+    ARRAY_OF(RgPassResource) inputs;
 
     VkClearValue *clear_values; // array with length equal to num_attachments
 
@@ -392,6 +415,8 @@ struct RgGraph
     bool built;
     bool has_swapchain;
     RgSwapchain swapchain;
+
+    uint32_t num_frames;
 
     void *user_data;
 
@@ -2827,7 +2852,7 @@ rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_c
     node->pass_indices = (uint32_t *)malloc(sizeof(*node->pass_indices) * pass_count);
     memcpy(node->pass_indices, pass_indices, sizeof(*node->pass_indices) * pass_count);
 
-    for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         allocateCmdBuffer(graph->device, &node->frames[i].cmd_buffer);
 
@@ -2876,11 +2901,12 @@ rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_c
     }
 }
 
-static void rgNodeDestroy(RgDevice *device, RgNode *node)
+static void rgNodeDestroy(RgGraph *graph, RgNode *node)
 {
+    RgDevice *device = graph->device;
     VK_CHECK(vkDeviceWaitIdle(device->device));
 
-    for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         vkDestroySemaphore(
             device->device, node->frames[i].execution_finished_semaphore, NULL);
@@ -2930,12 +2956,21 @@ static uint64_t rgRenderpassHash(VkRenderPassCreateInfo *ci)
 
 static void rgPassResize(RgGraph *graph, RgPass *pass)
 {
-    for (uint32_t i = 0; i < pass->num_framebuffers; ++i)
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
-        if (pass->framebuffers[i])
+        for (uint32_t j = 0; j < pass->num_framebuffers; ++j)
         {
-            vkDestroyFramebuffer(graph->device->device, pass->framebuffers[i], NULL);
-            pass->framebuffers[i] = VK_NULL_HANDLE;
+            if (pass->frames[i].framebuffers[j])
+            {
+                vkDestroyFramebuffer(graph->device->device,
+                                     pass->frames[i].framebuffers[j], NULL);
+                pass->frames[i].framebuffers[j] = VK_NULL_HANDLE;
+            }
+        }
+
+        if (pass->frames[i].framebuffers)
+        {
+            free(pass->frames[i].framebuffers);
         }
     }
 
@@ -2945,10 +2980,6 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         pass->renderpass = VK_NULL_HANDLE;
     }
 
-    if (pass->framebuffers)
-    {
-        free(pass->framebuffers);
-    }
 
     if (pass->is_backbuffer)
     {
@@ -2959,9 +2990,13 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         pass->num_framebuffers = 1;
     }
 
-    pass->framebuffers =
-        (VkFramebuffer *)malloc(sizeof(VkFramebuffer) * pass->num_framebuffers);
-    memset(pass->framebuffers, 0, sizeof(VkFramebuffer) * pass->num_framebuffers);
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
+    {
+        pass->frames[i].framebuffers =
+            (VkFramebuffer *)malloc(sizeof(VkFramebuffer) * pass->num_framebuffers);
+        memset(pass->frames[i].framebuffers,
+               0, sizeof(VkFramebuffer) * pass->num_framebuffers);
+    }
 
     ARRAY_OF(VkAttachmentDescription) rp_attachments;
     memset(&rp_attachments, 0, sizeof(rp_attachments));
@@ -2989,18 +3024,19 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
         VkAttachmentReference backbuffer_ref;
         memset(&backbuffer_ref, 0, sizeof(backbuffer_ref));
-        backbuffer_ref.attachment = arrLength(rp_attachments) - 1;
+        backbuffer_ref.attachment = rp_attachments.len - 1;
         backbuffer_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         arrPush(&color_attachment_refs, backbuffer_ref);
     }
 
     for (uint32_t i = 0; i < pass->outputs.len; ++i)
     {
-        RgResource *resource = &graph->resources.ptr[pass->outputs.ptr[i]];
+        RgPassResource pass_res = pass->outputs.ptr[i];
+        RgResource *resource = &graph->resources.ptr[pass_res.index];
 
-        switch (resource->type)
+        switch (pass_res.usage)
         {
-        case RG_RESOURCE_COLOR_ATTACHMENT: {
+        case RG_RESOURCE_USAGE_COLOR_ATTACHMENT: {
             VkAttachmentDescription attachment;
             memset(&attachment, 0, sizeof(attachment));
             attachment.format = format_to_vk(resource->image_info.format);
@@ -3015,12 +3051,12 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
             VkAttachmentReference attachment_ref;
             memset(&attachment_ref, 0, sizeof(attachment_ref));
-            attachment_ref.attachment = arrLength(rp_attachments) - 1;
+            attachment_ref.attachment = rp_attachments.len - 1;
             attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             arrPush(&color_attachment_refs, attachment_ref);
             break;
         }
-        case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT: {
+        case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT: {
             has_depth_stencil = true;
 
             VkAttachmentDescription attachment;
@@ -3035,15 +3071,11 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
             attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
             arrPush(&rp_attachments, attachment);
 
-            pass->depth_attachment_index = arrLength(rp_attachments) - 1;
-            depth_stencil_attachment_ref.attachment = arrLength(rp_attachments) - 1;
+            pass->depth_attachment_index = rp_attachments.len - 1;
+            depth_stencil_attachment_ref.attachment = rp_attachments.len - 1;
             depth_stencil_attachment_ref.layout =
                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-            break;
-        }
-
-        case RG_RESOURCE_BUFFER: {
             break;
         }
         }
@@ -3060,15 +3092,26 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         subpass.pDepthStencilAttachment = &depth_stencil_attachment_ref;
     }
 
-    VkSubpassDependency dependency;
-    memset(&dependency, 0, sizeof(dependency));
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.srcAccessMask = 0;
-    dependency.dstAccessMask =
-        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkSubpassDependency dependencies[2];
+    memset(dependencies, 0, sizeof(dependencies));
+
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
     VkRenderPassCreateInfo renderpass_ci;
     memset(&renderpass_ci, 0, sizeof(renderpass_ci));
@@ -3077,8 +3120,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     renderpass_ci.pAttachments = rp_attachments.ptr;
     renderpass_ci.subpassCount = 1;
     renderpass_ci.pSubpasses = &subpass;
-    renderpass_ci.dependencyCount = 1;
-    renderpass_ci.pDependencies = &dependency;
+    renderpass_ci.dependencyCount = sizeof(dependencies) / sizeof(dependencies[0]);
+    renderpass_ci.pDependencies = dependencies;
 
     VK_CHECK(vkCreateRenderPass(
         graph->device->device, &renderpass_ci, NULL, &pass->renderpass));
@@ -3086,44 +3129,50 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     pass->extent = graph->swapchain.extent;
     pass->hash = rgRenderpassHash(&renderpass_ci);
 
-    for (uint32_t i = 0; i < pass->num_framebuffers; ++i)
+    for (uint32_t f = 0; f < graph->num_frames; ++f)
     {
-        ARRAY_OF(VkImageView) views;
-        memset(&views, 0, sizeof(views));
-
-        if (pass->is_backbuffer)
+        for (uint32_t i = 0; i < pass->num_framebuffers; ++i)
         {
-            arrPush(&views, graph->swapchain.image_views[i]);
-        }
+            ARRAY_OF(VkImageView) views;
+            memset(&views, 0, sizeof(views));
 
-        for (uint32_t i = 0; i < pass->outputs.len; ++i)
-        {
-            RgResource *resource = &graph->resources.ptr[pass->outputs.ptr[i]];
-
-            switch (resource->type)
+            if (pass->is_backbuffer)
             {
-            case RG_RESOURCE_COLOR_ATTACHMENT:
-            case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
-                arrPush(&views, resource->image->view);
-                break;
-            case RG_RESOURCE_BUFFER: break;
+                arrPush(&views, graph->swapchain.image_views[i]);
             }
+
+            for (uint32_t i = 0; i < pass->outputs.len; ++i)
+            {
+                RgPassResource pass_res = pass->outputs.ptr[i];
+                RgResource *resource = &graph->resources.ptr[pass_res.index];
+
+                switch (pass_res.index)
+                {
+                case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+                case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+                    arrPush(&views, resource->frames[f].image->view);
+                    break;
+                case RG_RESOURCE_USAGE_SAMPLED:
+                    break;
+                }
+            }
+
+            VkFramebufferCreateInfo create_info;
+            memset(&create_info, 0, sizeof(create_info));
+            create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            create_info.renderPass = pass->renderpass;
+            create_info.attachmentCount = views.len;
+            create_info.pAttachments = views.ptr;
+            create_info.width = pass->extent.width;
+            create_info.height = pass->extent.height;
+            create_info.layers = 1;
+
+            VK_CHECK(vkCreateFramebuffer(
+                graph->device->device, &create_info, NULL,
+                &pass->frames[f].framebuffers[i]));
+
+            arrFree(&views);
         }
-
-        VkFramebufferCreateInfo create_info;
-        memset(&create_info, 0, sizeof(create_info));
-        create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        create_info.renderPass = pass->renderpass;
-        create_info.attachmentCount = views.len;
-        create_info.pAttachments = views.ptr;
-        create_info.width = pass->extent.width;
-        create_info.height = pass->extent.height;
-        create_info.layers = 1;
-
-        VK_CHECK(vkCreateFramebuffer(
-            graph->device->device, &create_info, NULL, &pass->framebuffers[i]));
-
-        arrFree(&views);
     }
 
     arrFree(&rp_attachments);
@@ -3140,14 +3189,15 @@ static void rgPassBuild(RgGraph *graph, RgPass *pass)
 
     for (uint32_t i = 0; i < pass->outputs.len; ++i)
     {
-        RgResource *resource = &graph->resources.ptr[pass->outputs.ptr[i]];
-        switch (resource->type)
+        RgPassResource pass_res = pass->outputs.ptr[i];
+        RgResource *resource = &graph->resources.ptr[pass_res.index];
+        switch (pass_res.usage)
         {
-        case RG_RESOURCE_COLOR_ATTACHMENT:
+        case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
             pass->num_color_attachments++;
             pass->num_attachments++;
             break;
-        case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
+        case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
             pass->has_depth_attachment = true;
             pass->num_attachments++;
             break;
@@ -3159,8 +3209,10 @@ static void rgPassBuild(RgGraph *graph, RgPass *pass)
     memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
 }
 
-static void rgPassDestroy(RgDevice *device, RgPass *pass)
+static void rgPassDestroy(RgGraph *graph, RgPass *pass)
 {
+    RgDevice *device = graph->device;
+
     VK_CHECK(vkDeviceWaitIdle(device->device));
     if (pass->renderpass)
     {
@@ -3168,18 +3220,21 @@ static void rgPassDestroy(RgDevice *device, RgPass *pass)
         pass->renderpass = VK_NULL_HANDLE;
     }
 
-    for (uint32_t i = 0; i < pass->num_framebuffers; ++i)
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
-        vkDestroyFramebuffer(device->device, pass->framebuffers[i], NULL);
-        if (pass->framebuffers[i])
+        for (uint32_t j = 0; j < pass->num_framebuffers; ++j)
         {
-            pass->framebuffers[i] = VK_NULL_HANDLE;
+            vkDestroyFramebuffer(device->device, pass->frames[i].framebuffers[j], NULL);
+            if (pass->frames[i].framebuffers[j])
+            {
+                pass->frames[i].framebuffers[j] = VK_NULL_HANDLE;
+            }
         }
-    }
 
-    if (pass->framebuffers)
-    {
-        free(pass->framebuffers);
+        if (pass->frames[i].framebuffers)
+        {
+            free(pass->frames[i].framebuffers);
+        }
     }
 
     arrFree(&pass->inputs);
@@ -3187,20 +3242,16 @@ static void rgPassDestroy(RgDevice *device, RgPass *pass)
     free(pass->clear_values);
 }
 
-void rgGraphResize(RgGraph *graph)
+static void resizeResource(RgGraph *graph, RgResource* resource)
 {
-    rgSwapchainResize(&graph->swapchain);
-
-    for (uint32_t i = 0; i < graph->resources.len; ++i)
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
-        RgResource *resource = &graph->resources.ptr[i];
         switch (resource->type)
         {
-        case RG_RESOURCE_COLOR_ATTACHMENT:
-        case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT: {
-            if (resource->image)
+        case RG_RESOURCE_IMAGE: {
+            if (resource->frames[i].image)
             {
-                rgImageDestroy(graph->device, resource->image);
+                rgImageDestroy(graph->device, resource->frames[i].image);
             }
 
             RgImageInfo image_info;
@@ -3237,15 +3288,27 @@ void rgGraphResize(RgGraph *graph)
             assert(image_info.width > 0);
             assert(image_info.height > 0);
 
-            resource->image = rgImageCreate(graph->device, &image_info);
+            resource->frames[i].image = rgImageCreate(graph->device, &image_info);
             break;
         }
 
         case RG_RESOURCE_BUFFER:
-            if (resource->buffer) break;
-            resource->buffer = rgBufferCreate(graph->device, &resource->buffer_info);
+            if (resource->frames[i].buffer) break;
+            resource->frames[i].buffer =
+                rgBufferCreate(graph->device, &resource->buffer_info);
             break;
         }
+    }
+}
+
+void rgGraphResize(RgGraph *graph)
+{
+    rgSwapchainResize(&graph->swapchain);
+
+    for (uint32_t i = 0; i < graph->resources.len; ++i)
+    {
+        RgResource *resource = &graph->resources.ptr[i];
+        resizeResource(graph, resource);
     }
 
     for (uint32_t i = 0; i < graph->passes.len; ++i)
@@ -3262,10 +3325,12 @@ RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *
     graph->device = device;
     graph->user_data = user_data;
 
+    graph->num_frames = 1;
     if (window)
     {
         graph->has_swapchain = true;
         rgSwapchainInit(device, &graph->swapchain, window);
+        graph->num_frames = RG_FRAMES_IN_FLIGHT;
     }
 
     return graph;
@@ -3287,66 +3352,103 @@ RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback)
     return ref;
 }
 
-RgResourceRef rgGraphAddResource(RgGraph *graph, RgResourceInfo *info)
+RgResourceRef rgGraphAddImage(RgGraph *graph, RgGraphImageInfo *info)
 {
     RgResourceRef ref;
     ref.index = graph->resources.len;
 
     RgResource resource;
     memset(&resource, 0, sizeof(resource));
+    resource.type = RG_RESOURCE_IMAGE;
 
-    resource.type = info->type;
-    switch (resource.type)
-    {
-    case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
-        resource.image_info = info->image;
-        resource.image_info.usage |= RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
-
-        switch (resource.image_info.format)
-        {
-        case RG_FORMAT_D32_SFLOAT:
-            resource.image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
-            break;
-
-        case RG_FORMAT_D24_UNORM_S8_UINT:
-            resource.image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
-            resource.image_info.aspect |= RG_IMAGE_ASPECT_STENCIL;
-            break;
-
-        default: assert(0);
-        }
-        break;
-
-    case RG_RESOURCE_COLOR_ATTACHMENT:
-        resource.image_info = info->image;
-        resource.image_info.usage |=
-            RG_IMAGE_USAGE_SAMPLED | RG_IMAGE_USAGE_COLOR_ATTACHMENT;
-        resource.image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
-        break;
-
-    case RG_RESOURCE_BUFFER: break;
-    }
+    resource.image_info.scaling_mode = info->scaling_mode;
+    resource.image_info.width = info->width;
+    resource.image_info.height = info->height;
+    resource.image_info.depth = info->depth;
+    resource.image_info.sample_count = info->sample_count;
+    resource.image_info.mip_count = info->mip_count;
+    resource.image_info.layer_count = info->layer_count;
+    resource.image_info.aspect = info->aspect;
+    resource.image_info.format = info->format;
 
     arrPush(&graph->resources, resource);
 
     return ref;
 }
 
-void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref)
+RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info)
 {
-    RgPass *pass = &graph->passes.ptr[pass_ref.index];
-    arrPush(&pass->inputs, resource_ref.index);
+    RgResourceRef ref;
+    ref.index = graph->resources.len;
+
+    RgResource resource;
+    memset(&resource, 0, sizeof(resource));
+    resource.type = RG_RESOURCE_IMAGE;
+
+    resource.buffer_info = *info;
+
+    arrPush(&graph->resources, resource);
+
+    return ref;
 }
 
-void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref)
+static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
+{
+    switch (usage)
+    {
+    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:{
+        assert(res->type == RG_RESOURCE_IMAGE);
+        res->image_info.usage |= RG_IMAGE_USAGE_COLOR_ATTACHMENT;
+        res->image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
+        break;
+    }
+
+    case RG_RESOURCE_USAGE_SAMPLED:{
+        assert(res->type == RG_RESOURCE_IMAGE);
+        res->image_info.usage |= RG_IMAGE_USAGE_SAMPLED;
+        break;
+    }
+
+    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT: {
+        assert(res->type == RG_RESOURCE_IMAGE);
+        res->image_info.usage |= RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
+        res->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
+        break;
+    }
+    }
+}
+
+void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage usage)
 {
     RgPass *pass = &graph->passes.ptr[pass_ref.index];
-    arrPush(&pass->outputs, resource_ref.index);
+    RgResource *res = &graph->resources.ptr[resource_ref.index];
+
+    ensureResourceUsage(res, usage);
+
+    RgPassResource pass_res;
+    pass_res.index = resource_ref.index;
+    pass_res.usage = usage;
+
+    arrPush(&pass->inputs, pass_res);
+}
+
+void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage usage)
+{
+    RgPass *pass = &graph->passes.ptr[pass_ref.index];
+    RgResource *res = &graph->resources.ptr[resource_ref.index];
+
+    ensureResourceUsage(res, usage);
+
+    RgPassResource pass_res;
+    pass_res.index = resource_ref.index;
+    pass_res.usage = usage;
+
+    arrPush(&pass->outputs, pass_res);
 }
 
 void rgGraphBuild(RgGraph *graph)
 {
-    for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         VkSemaphoreCreateInfo semaphore_info;
         memset(&semaphore_info, 0, sizeof(semaphore_info));
@@ -3394,7 +3496,7 @@ void rgGraphDestroy(RgGraph *graph)
 {
     VK_CHECK(vkDeviceWaitIdle(graph->device->device));
 
-    for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         vkDestroySemaphore(
             graph->device->device, graph->image_available_semaphores[i], NULL);
@@ -3402,34 +3504,36 @@ void rgGraphDestroy(RgGraph *graph)
 
     for (uint32_t i = 0; i < graph->num_nodes; ++i)
     {
-        rgNodeDestroy(graph->device, &graph->nodes[i]);
+        rgNodeDestroy(graph, &graph->nodes[i]);
     }
     free(graph->nodes);
 
     for (uint32_t i = 0; i < graph->passes.len; ++i)
     {
-        rgPassDestroy(graph->device, &graph->passes.ptr[i]);
+        rgPassDestroy(graph, &graph->passes.ptr[i]);
     }
 
-    for (uint32_t i = 0; i < graph->resources.len; ++i)
+    for (uint32_t f = 0; f < graph->num_frames; ++f)
     {
-        switch (graph->resources.ptr[i].type)
+        for (uint32_t i = 0; i < graph->resources.len; ++i)
         {
-        case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT:
-        case RG_RESOURCE_COLOR_ATTACHMENT:
-            if (graph->resources.ptr[i].image)
+            switch (graph->resources.ptr[i].type)
             {
-                rgImageDestroy(graph->device, graph->resources.ptr[i].image);
-                graph->resources.ptr[i].image = NULL;
+            case RG_RESOURCE_IMAGE:
+                if (graph->resources.ptr[i].frames[f].image)
+                {
+                    rgImageDestroy(graph->device, graph->resources.ptr[i].frames[f].image);
+                    graph->resources.ptr[i].frames[f].image = NULL;
+                }
+                break;
+            case RG_RESOURCE_BUFFER:
+                if (graph->resources.ptr[i].frames[f].buffer)
+                {
+                    rgBufferDestroy(graph->device, graph->resources.ptr[i].frames[f].buffer);
+                    graph->resources.ptr[i].frames[f].buffer = NULL;
+                }
+                break;
             }
-            break;
-        case RG_RESOURCE_BUFFER:
-            if (graph->resources.ptr[i].buffer)
-            {
-                rgBufferDestroy(graph->device, graph->resources.ptr[i].buffer);
-                graph->resources.ptr[i].buffer = NULL;
-            }
-            break;
         }
     }
 
@@ -3444,6 +3548,108 @@ void rgGraphDestroy(RgGraph *graph)
     arrFree(&graph->resources);
 
     free(graph);
+}
+
+static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
+{
+    //
+    // Apply some barriers
+    //
+
+    // TODO: these stages are not optimal
+    // We need to base these on the current pass' stage and the next pass' stage
+    VkPipelineStageFlags src_stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkPipelineStageFlags dst_stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
+    graph->buffer_barriers.len = 0;
+    graph->image_barriers.len = 0;
+
+    for (uint32_t i = 0; i < pass->inputs.len; ++i)
+    {
+        RgPassResource pass_res = pass->inputs.ptr[i];
+        RgResource *res = &graph->resources.ptr[pass_res.index];
+        switch (pass_res.usage)
+        {
+        case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+        case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+        case RG_RESOURCE_USAGE_SAMPLED:
+            break;
+        }
+    }
+
+    vkCmdPipelineBarrier(
+        cmd_buffer->cmd_buffer,
+        src_stage_mask,
+        dst_stage_mask,
+        0,
+        0,
+        NULL,
+        (uint32_t)graph->buffer_barriers.len,
+        graph->buffer_barriers.ptr,
+        (uint32_t)graph->image_barriers.len,
+        graph->image_barriers.ptr);
+
+    //
+    // Begin render pass (if applicable)
+    //
+
+    if (pass->is_backbuffer)
+    {
+        pass->current_framebuffer = pass->frames[graph->current_frame]
+            .framebuffers[graph->swapchain.current_image_index];
+    }
+    else
+    {
+        pass->current_framebuffer = pass->frames[graph->current_frame]
+            .framebuffers[0];
+    }
+
+    memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
+
+    if (pass->has_depth_attachment)
+    {
+        pass->clear_values[pass->depth_attachment_index].depthStencil.depth =
+            1.0f;
+        pass->clear_values[pass->depth_attachment_index].depthStencil.stencil = 0;
+    }
+
+    VkRenderPassBeginInfo render_pass_info;
+    memset(&render_pass_info, 0, sizeof(render_pass_info));
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = pass->renderpass;
+    render_pass_info.framebuffer = pass->current_framebuffer;
+    render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
+    render_pass_info.renderArea.extent = pass->extent;
+    render_pass_info.clearValueCount = pass->num_attachments;
+    render_pass_info.pClearValues = pass->clear_values;
+
+    cmd_buffer->current_pass = pass;
+    vkCmdBeginRenderPass(
+        cmd_buffer->cmd_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport;
+    memset(&viewport, 0, sizeof(viewport));
+    viewport.x = 0;
+    viewport.y = 0;
+    viewport.width = (float)pass->extent.width;
+    viewport.height = (float)pass->extent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd_buffer->cmd_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor;
+    memset(&scissor, 0, sizeof(scissor));
+    scissor.offset.x = 0;
+    scissor.offset.y = 0;
+    scissor.extent = pass->extent;
+
+    vkCmdSetScissor(cmd_buffer->cmd_buffer, 0, 1, &scissor);
+
+    assert(pass->callback);
+    pass->callback(graph->user_data, cmd_buffer);
+
+    vkCmdEndRenderPass(cmd_buffer->cmd_buffer);
+    cmd_buffer->current_pass = NULL;
 }
 
 void rgGraphExecute(RgGraph *graph)
@@ -3500,69 +3706,13 @@ void rgGraphExecute(RgGraph *graph)
         VkCommandBufferBeginInfo begin_info;
         memset(&begin_info, 0, sizeof(begin_info));
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_CHECK(vkBeginCommandBuffer(cmd_buffer->cmd_buffer, &begin_info));
 
         for (uint32_t j = 0; j < node->num_pass_indices; ++j)
         {
             RgPass *pass = &graph->passes.ptr[node->pass_indices[j]];
-
-            if (pass->is_backbuffer)
-            {
-                pass->current_framebuffer =
-                    pass->framebuffers[graph->swapchain.current_image_index];
-            }
-            else
-            {
-                pass->current_framebuffer = pass->framebuffers[0];
-            }
-
-            memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
-
-            if (pass->has_depth_attachment)
-            {
-                pass->clear_values[pass->depth_attachment_index].depthStencil.depth =
-                    1.0f;
-                pass->clear_values[pass->depth_attachment_index].depthStencil.stencil = 0;
-            }
-
-            VkRenderPassBeginInfo render_pass_info;
-            memset(&render_pass_info, 0, sizeof(render_pass_info));
-            render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            render_pass_info.renderPass = pass->renderpass;
-            render_pass_info.framebuffer = pass->current_framebuffer;
-            render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
-            render_pass_info.renderArea.extent = pass->extent;
-            render_pass_info.clearValueCount = pass->num_attachments;
-            render_pass_info.pClearValues = pass->clear_values;
-
-            cmd_buffer->current_pass = pass;
-            vkCmdBeginRenderPass(
-                cmd_buffer->cmd_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-
-            VkViewport viewport;
-            memset(&viewport, 0, sizeof(viewport));
-            viewport.x = 0;
-            viewport.y = 0;
-            viewport.width = (float)pass->extent.width;
-            viewport.height = (float)pass->extent.height;
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            vkCmdSetViewport(cmd_buffer->cmd_buffer, 0, 1, &viewport);
-
-            VkRect2D scissor;
-            memset(&scissor, 0, sizeof(scissor));
-            scissor.offset.x = 0;
-            scissor.offset.y = 0;
-            scissor.extent = pass->extent;
-
-            vkCmdSetScissor(cmd_buffer->cmd_buffer, 0, 1, &scissor);
-
-            assert(pass->callback);
-            pass->callback(graph->user_data, cmd_buffer);
-
-            vkCmdEndRenderPass(cmd_buffer->cmd_buffer);
-            cmd_buffer->current_pass = NULL;
+            rgPassExecute(graph, cmd_buffer, pass);
         }
 
         rgBufferPoolReset(&cmd_buffer->ubo_pool);
@@ -3613,7 +3763,7 @@ void rgGraphExecute(RgGraph *graph)
         VK_CHECK(res);
     }
 
-    graph->current_frame = (graph->current_frame + 1) % RG_FRAMES_IN_FLIGHT;
+    graph->current_frame = (graph->current_frame + 1) % graph->num_frames;
 }
 
 RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource_ref)
@@ -3623,8 +3773,8 @@ RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource_ref)
     switch (resource->type)
     {
     case RG_RESOURCE_BUFFER: {
-        assert(resource->buffer);
-        return resource->buffer;
+        assert(resource->frames[graph->current_frame].buffer);
+        return resource->frames[graph->current_frame].buffer;
     }
 
     default: break;
@@ -3640,10 +3790,9 @@ RgImage *rgGraphGetImage(RgGraph *graph, RgResourceRef resource_ref)
 
     switch (resource->type)
     {
-    case RG_RESOURCE_COLOR_ATTACHMENT:
-    case RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT: {
-        assert(resource->image);
-        return resource->image;
+    case RG_RESOURCE_IMAGE: {
+        assert(resource->frames[graph->current_frame].image);
+        return resource->frames[graph->current_frame].image;
     }
 
     default: break;

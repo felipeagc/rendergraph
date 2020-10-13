@@ -250,10 +250,16 @@ typedef struct RgPipelineInfo
 
 typedef enum RgResourceType
 {
-    RG_RESOURCE_COLOR_ATTACHMENT,
-    RG_RESOURCE_DEPTH_STENCIL_ATTACHMENT,
-    RG_RESOURCE_BUFFER,
+    RG_RESOURCE_IMAGE = 0,
+    RG_RESOURCE_BUFFER = 1,
 } RgResourceType;
+
+typedef enum RgResourceUsage
+{
+    RG_RESOURCE_USAGE_COLOR_ATTACHMENT = 0,
+    RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1,
+    RG_RESOURCE_USAGE_SAMPLED = 2,
+} RgResourceUsage;
 
 typedef enum RgGraphImageScalingMode
 {
@@ -270,7 +276,6 @@ typedef struct RgGraphImageInfo
 	uint32_t sample_count;
 	uint32_t mip_count;
 	uint32_t layer_count;
-	RgFlags usage;
 	RgFlags aspect;
 	RgFormat format;
 } RgGraphImageInfo;
@@ -332,9 +337,10 @@ void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline);
 
 RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *window);
 RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback);
-RgResourceRef rgGraphAddResource(RgGraph *graph, RgResourceInfo *info);
-void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass, RgResourceRef resource);
-void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass, RgResourceRef resource);
+RgResourceRef rgGraphAddImage(RgGraph *graph, RgGraphImageInfo *info);
+RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info);
+void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage usage);
+void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage usage);
 void rgGraphBuild(RgGraph *graph);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph);
