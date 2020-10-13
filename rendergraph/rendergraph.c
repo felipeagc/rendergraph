@@ -304,6 +304,8 @@ typedef union
 } RgDescriptor;
 
 typedef struct RgPass RgPass;
+typedef struct RgNode RgNode;
+
 struct RgCmdBuffer
 {
     RgDevice *device;

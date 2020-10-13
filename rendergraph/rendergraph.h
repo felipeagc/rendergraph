@@ -19,7 +19,6 @@ typedef struct RgImage RgImage;
 typedef struct RgSampler RgSampler;
 typedef struct RgCmdBuffer RgCmdBuffer;
 typedef struct RgGraph RgGraph;
-typedef struct RgNode RgNode;
 typedef uint32_t RgFlags;
 typedef void(RgPassCallback)(void*, RgCmdBuffer*);
 
