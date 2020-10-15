@@ -2560,7 +2560,7 @@ static void cmdBufferBindDescriptors(RgCmdBuffer *cmd_buffer)
             cmd_buffer->cmd_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS,
             cmd_buffer->current_pipeline->pipeline_layout,
-            0,
+            i,
             1,
             &descriptor_set,
             0,
