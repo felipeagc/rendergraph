@@ -1245,6 +1245,9 @@ static VkFormat format_to_vk(RgFormat fmt)
 
     case RG_FORMAT_D32_SFLOAT: return VK_FORMAT_D32_SFLOAT;
     case RG_FORMAT_D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
+
+    case RG_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
+    case RG_FORMAT_BC7_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
     }
     assert(0);
     return 0;

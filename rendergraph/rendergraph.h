@@ -63,6 +63,9 @@ typedef enum RgFormat
 
     RG_FORMAT_D32_SFLOAT = 9,
     RG_FORMAT_D24_UNORM_S8_UINT = 10,
+
+    RG_FORMAT_BC7_UNORM = 11,
+    RG_FORMAT_BC7_SRGB = 12,
 } RgFormat;
 
 typedef enum RgImageUsage
