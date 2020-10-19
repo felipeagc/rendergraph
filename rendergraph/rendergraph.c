@@ -422,9 +422,7 @@ struct RgGraph
 
     void *user_data;
 
-    RgNode *nodes;
-    uint32_t num_nodes;
-
+    ARRAY_OF(RgNode) nodes;
     ARRAY_OF(RgPass) passes;
     ARRAY_OF(RgResource) resources;
 
@@ -2571,6 +2569,29 @@ static void cmdBufferBindDescriptors(RgCmdBuffer *cmd_buffer)
     }
 }
 
+void rgCmdSetViewport(RgCmdBuffer *cb, const RgViewport *viewport)
+{
+    VkViewport vk_viewport;
+    vk_viewport.width = viewport->width;
+    vk_viewport.height = viewport->height;
+    vk_viewport.x = viewport->x;
+    vk_viewport.y = viewport->y;
+    vk_viewport.minDepth = viewport->min_depth;
+    vk_viewport.maxDepth = viewport->max_depth;
+
+    vkCmdSetViewport(cb->cmd_buffer, 0, 1, &vk_viewport);
+}
+
+void rgCmdSetScissor(RgCmdBuffer *cb, const RgRect2D *rect)
+{
+    VkRect2D vk_scissor;
+    vk_scissor.offset.x = rect->offset.x;
+    vk_scissor.offset.y = rect->offset.y;
+    vk_scissor.extent.width = rect->extent.width;
+    vk_scissor.extent.height = rect->extent.height;
+    vkCmdSetScissor(cb->cmd_buffer, 0, 1, &vk_scissor);
+}
+
 void rgCmdBindPipeline(RgCmdBuffer *cmd_buffer, RgPipeline *pipeline)
 {
     RgPass *pass = cmd_buffer->current_pass;
@@ -2846,12 +2867,52 @@ void rgCmdCopyImageToImage(
 // }}}
 
 // Graph {{{
+static void rgResourceResolveImageInfo(
+    const RgGraph *graph,
+    const RgGraphImageInfoInternal *internal,
+    RgImageInfo *out_info)
+{
+    memset(out_info, 0, sizeof(*out_info));
+
+    out_info->depth = internal->depth;
+    out_info->sample_count = internal->sample_count;
+    out_info->mip_count = internal->mip_count;
+    out_info->layer_count = internal->layer_count;
+    out_info->usage = internal->usage;
+    out_info->aspect = internal->aspect;
+    out_info->format = internal->format;
+
+    switch (internal->scaling_mode)
+    {
+    case RG_GRAPH_IMAGE_SCALING_MODE_ABSOLUTE: {
+        out_info->width = (uint32_t)internal->width;
+        out_info->height = (uint32_t)internal->height;
+        break;
+    }
+    case RG_GRAPH_IMAGE_SCALING_MODE_RELATIVE: {
+        assert(graph->has_swapchain);
+        assert(internal->width <= 1.0);
+        assert(internal->height <= 1.0);
+
+        assert(graph->has_swapchain);
+        out_info->width = (uint32_t)(
+            internal->width * (float)graph->swapchain.extent.width);
+        out_info->height = (uint32_t)(
+            internal->height * (float)graph->swapchain.extent.height);
+        break;
+    }
+    }
+
+    assert(out_info->width > 0);
+    assert(out_info->height > 0);
+}
+
 static void
 rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_count)
 {
     memset(node, 0, sizeof(*node));
 
-    bool is_last = node == &graph->nodes[graph->num_nodes - 1];
+    bool is_last = node == &graph->nodes.ptr[graph->nodes.len - 1];
 
     node->num_pass_indices = pass_count;
     node->pass_indices = (uint32_t *)malloc(sizeof(*node->pass_indices) * pass_count);
@@ -2881,19 +2942,23 @@ rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_c
         VkSemaphore *wait_semaphores = NULL;
         VkPipelineStageFlags *wait_stages = NULL;
 
-        if (is_last)
+        if (is_last && graph->has_swapchain)
         {
             // Last node has to wait for the swapchain image to be available
             num_wait_semaphores++;
         }
 
-        wait_semaphores =
-            (VkSemaphore *)malloc(sizeof(*wait_semaphores) * num_wait_semaphores);
-        wait_stages =
-            (VkPipelineStageFlags *)malloc(sizeof(*wait_stages) * num_wait_semaphores);
-
-        if (is_last)
+        if (num_wait_semaphores > 0)
         {
+            wait_semaphores =
+                (VkSemaphore *)malloc(sizeof(*wait_semaphores) * num_wait_semaphores);
+            wait_stages =
+                (VkPipelineStageFlags *)malloc(sizeof(*wait_stages) * num_wait_semaphores);
+        }
+
+        if (is_last && graph->has_swapchain)
+        {
+            assert(num_wait_semaphores > 0);
             wait_semaphores[num_wait_semaphores - 1] =
                 graph->image_available_semaphores[i];
             wait_stages[num_wait_semaphores - 1] =
@@ -2985,6 +3050,37 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         pass->renderpass = VK_NULL_HANDLE;
     }
 
+    if (pass->is_backbuffer)
+    {
+        assert(graph->has_swapchain);
+        pass->extent = graph->swapchain.extent;
+    }
+    else
+    {
+        for (uint32_t i = 0; i < pass->outputs.len; ++i)
+        {
+            RgPassResource pass_res = pass->outputs.ptr[i];
+            RgResource *resource = &graph->resources.ptr[pass_res.index];
+
+            if (resource->type == RG_RESOURCE_IMAGE)
+            {
+                switch (pass_res.usage)
+                {
+                case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+                case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+                {
+                    RgImageInfo image_info;
+                    rgResourceResolveImageInfo(graph, &resource->image_info, &image_info);
+                    pass->extent.width = image_info.width;
+                    pass->extent.height = image_info.height;
+                    break;
+                }
+
+                default: break;
+                }
+            }
+        }
+    }
 
     if (pass->is_backbuffer)
     {
@@ -3061,6 +3157,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
             arrPush(&color_attachment_refs, attachment_ref);
             break;
         }
+
         case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT: {
             has_depth_stencil = true;
 
@@ -3083,6 +3180,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
             break;
         }
+
+        default: break;
         }
     }
 
@@ -3131,7 +3230,6 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     VK_CHECK(vkCreateRenderPass(
         graph->device->device, &renderpass_ci, NULL, &pass->renderpass));
 
-    pass->extent = graph->swapchain.extent;
     pass->hash = rgRenderpassHash(&renderpass_ci);
 
     for (uint32_t f = 0; f < graph->num_frames; ++f)
@@ -3162,6 +3260,10 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
                 }
             }
 
+            assert(views.len > 0);
+            assert(pass->extent.width > 0);
+            assert(pass->extent.height > 0);
+
             VkFramebufferCreateInfo create_info;
             memset(&create_info, 0, sizeof(create_info));
             create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -3186,6 +3288,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
 static void rgPassBuild(RgGraph *graph, RgPass *pass)
 {
+    (void)graph;
     if (pass->is_backbuffer)
     {
         pass->num_color_attachments++;
@@ -3195,7 +3298,6 @@ static void rgPassBuild(RgGraph *graph, RgPass *pass)
     for (uint32_t i = 0; i < pass->outputs.len; ++i)
     {
         RgPassResource pass_res = pass->outputs.ptr[i];
-        RgResource *resource = &graph->resources.ptr[pass_res.index];
         switch (pass_res.usage)
         {
         case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
@@ -3260,38 +3362,7 @@ static void resizeResource(RgGraph *graph, RgResource* resource)
             }
 
             RgImageInfo image_info;
-            memset(&image_info, 0, sizeof(image_info));
-
-            image_info.depth = resource->image_info.depth;
-            image_info.sample_count = resource->image_info.sample_count;
-            image_info.mip_count = resource->image_info.mip_count;
-            image_info.layer_count = resource->image_info.layer_count;
-            image_info.usage = resource->image_info.usage;
-            image_info.aspect = resource->image_info.aspect;
-            image_info.format = resource->image_info.format;
-
-            switch (resource->image_info.scaling_mode)
-            {
-            case RG_GRAPH_IMAGE_SCALING_MODE_ABSOLUTE: {
-                image_info.width = (uint32_t)resource->image_info.width;
-                image_info.height = (uint32_t)resource->image_info.height;
-                break;
-            }
-            case RG_GRAPH_IMAGE_SCALING_MODE_RELATIVE: {
-                assert(resource->image_info.width <= 1.0);
-                assert(resource->image_info.height <= 1.0);
-
-                assert(graph->has_swapchain);
-                image_info.width = (uint32_t)(
-                    resource->image_info.width * (float)graph->swapchain.extent.width);
-                image_info.height = (uint32_t)(
-                    resource->image_info.height * (float)graph->swapchain.extent.height);
-                break;
-            }
-            }
-
-            assert(image_info.width > 0);
-            assert(image_info.height > 0);
+            rgResourceResolveImageInfo(graph, &resource->image_info, &image_info);
 
             resource->frames[i].image = rgImageCreate(graph->device, &image_info);
             break;
@@ -3308,7 +3379,10 @@ static void resizeResource(RgGraph *graph, RgResource* resource)
 
 void rgGraphResize(RgGraph *graph)
 {
-    rgSwapchainResize(&graph->swapchain);
+    if (graph->has_swapchain)
+    {
+        rgSwapchainResize(&graph->swapchain);
+    }
 
     for (uint32_t i = 0; i < graph->resources.len; ++i)
     {
@@ -3403,7 +3477,7 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
     {
     case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:{
         assert(res->type == RG_RESOURCE_IMAGE);
-        res->image_info.usage |= RG_IMAGE_USAGE_COLOR_ATTACHMENT;
+        res->image_info.usage |= RG_IMAGE_USAGE_COLOR_ATTACHMENT | RG_IMAGE_USAGE_SAMPLED;
         res->image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
         break;
     }
@@ -3467,9 +3541,13 @@ void rgGraphBuild(RgGraph *graph)
 
     assert(graph->passes.len > 0);
 
-    graph->num_nodes = 1;
-    graph->nodes = (RgNode *)malloc(sizeof(*graph->nodes) * graph->num_nodes);
-    for (uint32_t i = 0; i < graph->num_nodes; ++i)
+    assert(graph->nodes.len == 0);
+
+    RgNode node;
+    memset(&node, 0, sizeof(node));
+    arrPush(&graph->nodes, node);
+
+    for (uint32_t i = 0; i < graph->nodes.len; ++i)
     {
         // TODO: split passes across multiple nodes when needed (e.g. compute)
         uint32_t *pass_indices = malloc(sizeof(uint32_t) * graph->passes.len);
@@ -3480,7 +3558,7 @@ void rgGraphBuild(RgGraph *graph)
             pass_indices[i] = i;
         }
 
-        rgNodeInit(graph, &graph->nodes[i], pass_indices, num_passes);
+        rgNodeInit(graph, &graph->nodes.ptr[i], pass_indices, num_passes);
     }
 
     for (uint32_t i = 0; i < graph->passes.len; ++i)
@@ -3507,11 +3585,11 @@ void rgGraphDestroy(RgGraph *graph)
             graph->device->device, graph->image_available_semaphores[i], NULL);
     }
 
-    for (uint32_t i = 0; i < graph->num_nodes; ++i)
+    for (uint32_t i = 0; i < graph->nodes.len; ++i)
     {
-        rgNodeDestroy(graph, &graph->nodes[i]);
+        rgNodeDestroy(graph, &graph->nodes.ptr[i]);
     }
-    free(graph->nodes);
+    arrFree(&graph->nodes);
 
     for (uint32_t i = 0; i < graph->passes.len; ++i)
     {
@@ -3572,7 +3650,6 @@ static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
     for (uint32_t i = 0; i < pass->inputs.len; ++i)
     {
         RgPassResource pass_res = pass->inputs.ptr[i];
-        RgResource *res = &graph->resources.ptr[pass_res.index];
         switch (pass_res.usage)
         {
         case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
@@ -3600,6 +3677,7 @@ static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
 
     if (pass->is_backbuffer)
     {
+        assert(graph->has_swapchain);
         pass->current_framebuffer = pass->frames[graph->current_frame]
             .framebuffers[graph->swapchain.current_image_index];
     }
@@ -3662,11 +3740,11 @@ void rgGraphExecute(RgGraph *graph)
     assert(graph->built);
     uint32_t current_frame = graph->current_frame;
 
-    for (uint32_t i = 0; i < graph->num_nodes; ++i)
+    for (uint32_t i = 0; i < graph->nodes.len; ++i)
     {
-        RgNode *node = &graph->nodes[i];
+        RgNode *node = &graph->nodes.ptr[i];
 
-        if (i == (graph->num_nodes - 1))
+        if (i == (graph->nodes.len - 1) && graph->has_swapchain)
         {
             // Last node has to acquire swapchain image
 
@@ -3693,6 +3771,7 @@ void rgGraphExecute(RgGraph *graph)
                     break;
                 }
 
+                assert(graph->has_swapchain);
                 rgSwapchainResize(&graph->swapchain);
             }
 
@@ -3701,10 +3780,6 @@ void rgGraphExecute(RgGraph *graph)
 
         VK_CHECK(
             vkResetFences(graph->device->device, 1, &node->frames[current_frame].fence));
-
-        uint32_t num_signal_semaphores = 1;
-        VkSemaphore *signal_semaphores =
-            &node->frames[current_frame].execution_finished_semaphore;
 
         RgCmdBuffer *cmd_buffer = &node->frames[current_frame].cmd_buffer;
 
@@ -3734,8 +3809,15 @@ void rgGraphExecute(RgGraph *graph)
         submit.pWaitDstStageMask = node->frames[current_frame].wait_stages;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd_buffer->cmd_buffer;
-        submit.signalSemaphoreCount = num_signal_semaphores;
-        submit.pSignalSemaphores = signal_semaphores;
+        if (i == (graph->nodes.len - 1) && graph->has_swapchain)
+        {
+            uint32_t num_signal_semaphores = 1;
+            VkSemaphore *signal_semaphores =
+                &node->frames[current_frame].execution_finished_semaphore;
+
+            submit.signalSemaphoreCount = num_signal_semaphores;
+            submit.pSignalSemaphores = signal_semaphores;
+        }
 
         VK_CHECK(vkQueueSubmit(
             graph->device->graphics_queue,
@@ -3744,31 +3826,49 @@ void rgGraphExecute(RgGraph *graph)
             node->frames[current_frame].fence));
     }
 
-    RgNode *last_node = &graph->nodes[graph->num_nodes - 1];
-
-    VkPresentInfoKHR present_info;
-    memset(&present_info, 0, sizeof(present_info));
-    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores =
-        &last_node->frames[current_frame].execution_finished_semaphore;
-    present_info.swapchainCount = 1;
-    present_info.pSwapchains = &graph->swapchain.swapchain;
-    present_info.pImageIndices = &graph->swapchain.current_image_index;
-
-    assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
-
-    VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
+    if (graph->has_swapchain)
     {
-        rgSwapchainResize(&graph->swapchain);
-    }
-    else
-    {
-        VK_CHECK(res);
+        RgNode *last_node = &graph->nodes.ptr[graph->nodes.len - 1];
+
+        VkPresentInfoKHR present_info;
+        memset(&present_info, 0, sizeof(present_info));
+        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores =
+            &last_node->frames[current_frame].execution_finished_semaphore;
+        present_info.swapchainCount = 1;
+        present_info.pSwapchains = &graph->swapchain.swapchain;
+        present_info.pImageIndices = &graph->swapchain.current_image_index;
+
+        assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
+
+        VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
+        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
+        {
+            assert(graph->has_swapchain);
+            rgSwapchainResize(&graph->swapchain);
+        }
+        else
+        {
+            VK_CHECK(res);
+        }
     }
 
     graph->current_frame = (graph->current_frame + 1) % graph->num_frames;
+}
+
+void rgGraphWaitAll(RgGraph *graph)
+{
+    for (uint32_t i = 0; i < graph->nodes.len; ++i)
+    {
+        RgNode *node = &graph->nodes.ptr[i];
+        vkWaitForFences(
+            graph->device->device,
+            1,
+            &node->frames[graph->current_frame].fence,
+            VK_TRUE,
+            UINT64_MAX);
+    }
 }
 
 RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource_ref)

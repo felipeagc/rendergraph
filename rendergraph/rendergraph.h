@@ -302,6 +302,32 @@ typedef struct RgExtent3D
     uint32_t width, height, depth;
 } RgExtent3D;
 
+typedef struct RgOffset2D
+{
+    int32_t x, y;
+} RgOffset2D;
+
+typedef struct RgExtent2D
+{
+    uint32_t width, height;
+} RgExtent2D;
+
+typedef struct RgRect2D
+{
+    RgOffset2D offset;
+    RgExtent2D extent;
+} RgRect2D;
+
+typedef struct RgViewport
+{
+    float x;
+    float y;
+    float width;
+    float height;
+    float min_depth;
+    float max_depth;
+} RgViewport;
+
 typedef struct RgImageCopy
 {
     RgImage *image;
@@ -347,9 +373,12 @@ void rgGraphBuild(RgGraph *graph);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph);
 void rgGraphExecute(RgGraph *graph);
+void rgGraphWaitAll(RgGraph *graph);
 RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource);
 RgImage *rgGraphGetImage(RgGraph *graph, RgResourceRef resource);
 
+void rgCmdSetViewport(RgCmdBuffer *cb, const RgViewport *viewport);
+void rgCmdSetScissor(RgCmdBuffer *cb, const RgRect2D *rect);
 void rgCmdBindPipeline(RgCmdBuffer *cb, RgPipeline *pipeline);
 void rgCmdBindImage(RgCmdBuffer *cb, uint32_t binding, uint32_t set, RgImage *image);
 void rgCmdBindSampler(RgCmdBuffer *cb, uint32_t binding, uint32_t set, RgSampler *sampler);
