@@ -401,7 +401,8 @@ typedef struct RgResource
 typedef struct RgPassResource
 {
     uint32_t index;
-    RgResourceUsage usage;
+    RgResourceUsage pre_usage;
+    RgResourceUsage post_usage;
 } RgPassResource;
 
 struct RgPass
@@ -1423,6 +1424,74 @@ static VkDescriptorType pipeline_binding_type_to_vk(RgPipelineBindingType type)
 }
 // }}}
 
+// Barrier utils {{{
+static void rgResourceUsageToVk(
+    RgResourceUsage usage,
+    VkAccessFlags *access_flags,
+    /* optional */ VkImageLayout *image_layout)
+{
+    switch (usage)
+    {
+    case RG_RESOURCE_USAGE_UNDEFINED:
+    {
+        if (access_flags)
+            *access_flags = 0;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        break;
+    }
+    case RG_RESOURCE_USAGE_SAMPLED:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_SHADER_READ_BIT;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_SRC:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_TRANSFER_READ_BIT;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_DST:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+
+        // We use VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL because
+        // this is the renderpass attachment's finalLayout
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+        // We use VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL because
+        // this is the renderpass attachment's finalLayout
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        break;
+    }
+    }
+}
+// }}}
+
 // Buffer {{{
 RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
 {
@@ -1847,81 +1916,11 @@ void rgImageBarrier(
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
-    switch (from)
-    {
-    case RG_RESOURCE_USAGE_SAMPLED:
-    {
-        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_TRANSFER_SRC:
-    {
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_TRANSFER_DST:
-    {
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
-    {
-        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-            | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
-    {
-        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-            | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        break;
-    }
-    }
-
-    switch (to)
-    {
-    case RG_RESOURCE_USAGE_SAMPLED:
-    {
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_TRANSFER_SRC:
-    {
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_TRANSFER_DST:
-    {
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
-    {
-        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-            | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
-    {
-        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-            | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        break;
-    }
-    }
-
     barrier.image = image->image;
     barrier.subresourceRange = subresource_range;
+
+    rgResourceUsageToVk(from, &barrier.srcAccessMask, &barrier.oldLayout);
+    rgResourceUsageToVk(to, &barrier.dstAccessMask, &barrier.newLayout);
 
     vkCmdPipelineBarrier(
         cmd_buffer,
@@ -3247,7 +3246,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
             if (resource->type == RG_RESOURCE_IMAGE)
             {
-                switch (pass_res.usage)
+                switch (pass_res.post_usage)
                 {
                 case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
                 case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
@@ -3318,7 +3317,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         RgPassResource pass_res = pass->used_resources.ptr[i];
         RgResource *resource = &graph->resources.ptr[pass_res.index];
 
-        switch (pass_res.usage)
+        switch (pass_res.post_usage)
         {
         case RG_RESOURCE_USAGE_COLOR_ATTACHMENT: {
             VkAttachmentDescription attachment;
@@ -3432,7 +3431,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
                 RgPassResource pass_res = pass->used_resources.ptr[i];
                 RgResource *resource = &graph->resources.ptr[pass_res.index];
 
-                switch (pass_res.usage)
+                switch (pass_res.post_usage)
                 {
                 case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
                 case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
@@ -3484,7 +3483,7 @@ static void rgPassBuild(RgGraph *graph, RgPass *pass)
     for (uint32_t i = 0; i < pass->used_resources.len; ++i)
     {
         RgPassResource pass_res = pass->used_resources.ptr[i];
-        switch (pass_res.usage)
+        switch (pass_res.post_usage)
         {
         case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
             pass->num_color_attachments++;
@@ -3702,7 +3701,10 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
 {
     switch (usage)
     {
-    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:{
+    case RG_RESOURCE_USAGE_UNDEFINED: break;
+
+    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+    {
         if (res->type == RG_RESOURCE_IMAGE)
         {
             res->image_info.usage |=
@@ -3712,7 +3714,8 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
         break;
     }
 
-    case RG_RESOURCE_USAGE_SAMPLED:{
+    case RG_RESOURCE_USAGE_SAMPLED:
+    {
         if (res->type == RG_RESOURCE_IMAGE)
         {
             res->image_info.usage |= RG_IMAGE_USAGE_SAMPLED;
@@ -3720,7 +3723,8 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
         break;
     }
 
-    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT: {
+    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+    {
         if (res->type == RG_RESOURCE_IMAGE)
         {
             res->image_info.usage |= RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
@@ -3729,7 +3733,8 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
         break;
     }
 
-    case RG_RESOURCE_USAGE_TRANSFER_SRC: {
+    case RG_RESOURCE_USAGE_TRANSFER_SRC:
+    {
         if (res->type == RG_RESOURCE_IMAGE)
         {
             res->image_info.usage |= RG_IMAGE_USAGE_TRANSFER_SRC;
@@ -3741,7 +3746,8 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
         break;
     }
 
-    case RG_RESOURCE_USAGE_TRANSFER_DST: {
+    case RG_RESOURCE_USAGE_TRANSFER_DST:
+    {
         if (res->type == RG_RESOURCE_IMAGE)
         {
             res->image_info.usage |= RG_IMAGE_USAGE_TRANSFER_DST;
@@ -3755,16 +3761,17 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
     }
 }
 
-void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage usage)
+void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage pre_usage, RgResourceUsage post_usage)
 {
     RgPass *pass = &graph->passes.ptr[pass_ref.index];
     RgResource *res = &graph->resources.ptr[resource_ref.index];
 
-    ensureResourceUsage(res, usage);
+    ensureResourceUsage(res, post_usage);
 
     RgPassResource pass_res;
     pass_res.index = resource_ref.index;
-    pass_res.usage = usage;
+    pass_res.pre_usage = pre_usage;
+    pass_res.post_usage = post_usage;
 
     arrPush(&pass->used_resources, pass_res);
 }
@@ -3919,26 +3926,18 @@ static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
             barrier.subresourceRange.baseArrayLayer = 0;
             barrier.subresourceRange.layerCount = image->info.layer_count;
 
-            switch (pass_res.usage)
+            rgResourceUsageToVk(pass_res.pre_usage,
+                                &barrier.srcAccessMask,
+                                &barrier.oldLayout);
+            rgResourceUsageToVk(pass_res.post_usage,
+                                &barrier.dstAccessMask,
+                                &barrier.newLayout);
+
+            switch (pass_res.post_usage)
             {
             case RG_RESOURCE_USAGE_TRANSFER_SRC:
-            {
-                barrier.srcAccessMask = 0;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-
-                arrPush(&graph->image_barriers, barrier);
-                break;
-            }
-
             case RG_RESOURCE_USAGE_TRANSFER_DST:
             {
-                barrier.srcAccessMask = 0;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-
                 arrPush(&graph->image_barriers, barrier);
                 break;
             }
@@ -3963,22 +3962,18 @@ static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
             barrier.offset = 0;
             barrier.size = VK_WHOLE_SIZE;
 
-            switch (pass_res.usage)
+            rgResourceUsageToVk(pass_res.pre_usage,
+                                &barrier.srcAccessMask,
+                                NULL);
+            rgResourceUsageToVk(pass_res.post_usage,
+                                &barrier.dstAccessMask,
+                                NULL);
+
+            switch (pass_res.post_usage)
             {
             case RG_RESOURCE_USAGE_TRANSFER_SRC:
-            {
-                barrier.srcAccessMask = 0;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-                arrPush(&graph->buffer_barriers, barrier);
-                break;
-            }
-
             case RG_RESOURCE_USAGE_TRANSFER_DST:
             {
-                barrier.srcAccessMask = 0;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
                 arrPush(&graph->buffer_barriers, barrier);
                 break;
             }

@@ -252,11 +252,12 @@ typedef struct RgPipelineInfo
 
 typedef enum RgResourceUsage
 {
-    RG_RESOURCE_USAGE_COLOR_ATTACHMENT = 0,
-    RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1,
-    RG_RESOURCE_USAGE_SAMPLED = 2,
-    RG_RESOURCE_USAGE_TRANSFER_SRC = 3,
-    RG_RESOURCE_USAGE_TRANSFER_DST = 4,
+    RG_RESOURCE_USAGE_UNDEFINED = 0,
+    RG_RESOURCE_USAGE_COLOR_ATTACHMENT = 1,
+    RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT = 2,
+    RG_RESOURCE_USAGE_SAMPLED = 3,
+    RG_RESOURCE_USAGE_TRANSFER_SRC = 4,
+    RG_RESOURCE_USAGE_TRANSFER_DST = 5,
 } RgResourceUsage;
 
 typedef enum RgPassType
@@ -372,7 +373,7 @@ RgResourceRef rgGraphAddImage(RgGraph *graph, RgGraphImageInfo *info);
 RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info);
 RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image);
 RgResourceRef rgGraphAddExternalBuffer(RgGraph *graph, RgBuffer *buffer);
-void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage usage);
+void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage pre_usage, RgResourceUsage post_usage);
 void rgGraphBuild(RgGraph *graph);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph);
