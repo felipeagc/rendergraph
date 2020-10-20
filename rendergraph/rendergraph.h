@@ -250,18 +250,21 @@ typedef struct RgPipelineInfo
     const char* fragment_entry;
 } RgPipelineInfo;
 
-typedef enum RgResourceType
-{
-    RG_RESOURCE_IMAGE = 0,
-    RG_RESOURCE_BUFFER = 1,
-} RgResourceType;
-
 typedef enum RgResourceUsage
 {
     RG_RESOURCE_USAGE_COLOR_ATTACHMENT = 0,
     RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1,
     RG_RESOURCE_USAGE_SAMPLED = 2,
+    RG_RESOURCE_USAGE_TRANSFER_SRC = 3,
+    RG_RESOURCE_USAGE_TRANSFER_DST = 4,
 } RgResourceUsage;
+
+typedef enum RgPassType
+{
+    RG_PASS_TYPE_GRAPHICS = 0,
+    RG_PASS_TYPE_COMPUTE = 1,
+    RG_PASS_TYPE_TRANSFER = 2,
+} RgPassType;
 
 typedef enum RgGraphImageScalingMode
 {
@@ -281,16 +284,6 @@ typedef struct RgGraphImageInfo
 	RgFlags aspect;
 	RgFormat format;
 } RgGraphImageInfo;
-
-typedef struct RgResourceInfo
-{
-    RgResourceType type;
-    union 
-    {
-        RgGraphImageInfo image;
-        RgBufferInfo buffer;
-    };
-} RgResourceInfo;
 
 typedef struct RgOffset3D
 {
@@ -344,12 +337,22 @@ typedef struct RgBufferCopy
     uint32_t image_height;
 } RgBufferCopy;
 
+typedef enum RgObjectType
+{
+    RG_OBJECT_TYPE_UNKNOWN = 0,
+    RG_OBJECT_TYPE_IMAGE = 1,
+    RG_OBJECT_TYPE_BUFFER = 2,
+} RgObjectType;
+
 RgDevice *rgDeviceCreate();
 void rgDeviceDestroy(RgDevice* device);
+
+void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const char* name);
 
 RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info);
 void rgImageDestroy(RgDevice *device, RgImage *image);
 void rgImageUpload(RgDevice *device, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data);
+void rgImageBarrier(RgDevice *device, RgImage *image, RgResourceUsage from, RgResourceUsage to);
 
 RgSampler *rgSamplerCreate(RgDevice *device, RgSamplerInfo *info);
 void rgSamplerDestroy(RgDevice *device, RgSampler *sampler);
@@ -364,11 +367,12 @@ RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info);
 void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline);
 
 RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *window);
-RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback);
+RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType pass_type, RgPassCallback *callback);
 RgResourceRef rgGraphAddImage(RgGraph *graph, RgGraphImageInfo *info);
 RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info);
-void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage usage);
-void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage usage);
+RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image);
+RgResourceRef rgGraphAddExternalBuffer(RgGraph *graph, RgBuffer *buffer);
+void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage usage);
 void rgGraphBuild(RgGraph *graph);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph);

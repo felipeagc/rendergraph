@@ -266,6 +266,22 @@ struct RgDevice
     VkCommandPool graphics_command_pool;
 };
 
+struct RgImage
+{
+    RgImageInfo info;
+    VkImage image;
+    VmaAllocation allocation;
+    VkImageView view;
+    VkImageAspectFlags aspect;
+};
+
+struct RgBuffer
+{
+    RgBufferInfo info;
+    VkBuffer buffer;
+    VmaAllocation allocation;
+};
+
 typedef struct RgBufferPool RgBufferPool;
 typedef struct RgBufferChunk RgBufferChunk;
 
@@ -355,6 +371,14 @@ typedef struct RgGraphImageInfoInternal
 	RgFormat format;
 } RgGraphImageInfoInternal;
 
+typedef enum RgResourceType
+{
+    RG_RESOURCE_IMAGE = 0,
+    RG_RESOURCE_BUFFER = 1,
+    RG_RESOURCE_EXTERNAL_IMAGE = 2,
+    RG_RESOURCE_EXTERNAL_BUFFER = 3,
+} RgResourceType;
+
 typedef struct RgResource
 {
     RgResourceType type;
@@ -383,6 +407,7 @@ typedef struct RgPassResource
 struct RgPass
 {
     RgGraph *graph;
+    RgPassType type;
 
     bool is_backbuffer;
 
@@ -400,8 +425,7 @@ struct RgPass
         VkFramebuffer *framebuffers;
     } frames[RG_FRAMES_IN_FLIGHT];
 
-    ARRAY_OF(RgPassResource) outputs;
-    ARRAY_OF(RgPassResource) inputs;
+    ARRAY_OF(RgPassResource) used_resources;
 
     VkClearValue *clear_values; // array with length equal to num_attachments
 
@@ -896,6 +920,35 @@ void rgDeviceDestroy(RgDevice *device)
 
     free(device);
 }
+
+void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const char* name)
+{
+#ifdef RENDERGRAPH_FEATURE_VALIDATION
+    VkDebugUtilsObjectNameInfoEXT info;
+    memset(&info, 0, sizeof(info));
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    info.pObjectName = name;
+    
+    switch (type)
+    {
+    case RG_OBJECT_TYPE_IMAGE: {
+        info.objectType = VK_OBJECT_TYPE_IMAGE;
+        info.objectHandle = (uint64_t)(((RgImage*)object)->image);
+        break;
+    }
+
+    case RG_OBJECT_TYPE_BUFFER: {
+        info.objectType = VK_OBJECT_TYPE_BUFFER;
+        info.objectHandle = (uint64_t)(((RgBuffer*)object)->buffer);
+        break;
+    }
+
+    case RG_OBJECT_TYPE_UNKNOWN: assert(0); break;
+    }
+
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device->device, &info));
+#endif
+}
 // }}}
 
 // Swapchain setup {{{
@@ -1371,13 +1424,6 @@ static VkDescriptorType pipeline_binding_type_to_vk(RgPipelineBindingType type)
 // }}}
 
 // Buffer {{{
-struct RgBuffer
-{
-    RgBufferInfo info;
-    VkBuffer buffer;
-    VmaAllocation allocation;
-};
-
 RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
 {
     RgBuffer *buffer = (RgBuffer *)malloc(sizeof(RgBuffer));
@@ -1519,15 +1565,6 @@ void rgBufferUpload(
 // }}}
 
 // Image {{{
-struct RgImage
-{
-    RgImageInfo info;
-    VkImage image;
-    VmaAllocation allocation;
-    VkImageView view;
-    VkImageAspectFlags aspect;
-};
-
 RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
 {
     RgImage *image = (RgImage *)malloc(sizeof(RgImage));
@@ -1579,7 +1616,8 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
         if (image->info.usage & RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)
             ci.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
-        VmaAllocationCreateInfo alloc_create_info = {0};
+        VmaAllocationCreateInfo alloc_create_info;
+        memset(&alloc_create_info, 0, sizeof(alloc_create_info));
         alloc_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
         VK_CHECK(vmaCreateImage(
@@ -1765,6 +1803,149 @@ void rgImageUpload(
     vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer);
 
     rgBufferDestroy(device, staging);
+}
+
+void rgImageBarrier(
+    RgDevice *device,
+    RgImage *image,
+    RgResourceUsage from,
+    RgResourceUsage to)
+{
+    VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+
+    VkFenceCreateInfo fence_info;
+    memset(&fence_info, 0, sizeof(fence_info));
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VK_CHECK(vkCreateFence(device->device, &fence_info, NULL, &fence));
+
+    VkCommandBufferAllocateInfo alloc_info;
+    memset(&alloc_info, 0, sizeof(alloc_info));
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool = device->graphics_command_pool;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = 1;
+
+    VK_CHECK(vkAllocateCommandBuffers(device->device, &alloc_info, &cmd_buffer));
+
+    VkCommandBufferBeginInfo begin_info;
+    memset(&begin_info, 0, sizeof(begin_info));
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cmd_buffer, &begin_info));
+
+    VkImageSubresourceRange subresource_range;
+    memset(&subresource_range, 0, sizeof(subresource_range));
+    subresource_range.aspectMask = image->aspect;
+    subresource_range.baseMipLevel = 0;
+    subresource_range.levelCount = image->info.mip_count;
+    subresource_range.baseArrayLayer = 0;
+    subresource_range.layerCount = image->info.layer_count;
+
+    VkImageMemoryBarrier barrier;
+    memset(&barrier, 0, sizeof(barrier));
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+    switch (from)
+    {
+    case RG_RESOURCE_USAGE_SAMPLED:
+    {
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_SRC:
+    {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_DST:
+    {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+    {
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+    {
+        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+            | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        break;
+    }
+    }
+
+    switch (to)
+    {
+    case RG_RESOURCE_USAGE_SAMPLED:
+    {
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_SRC:
+    {
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_DST:
+    {
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+    {
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+    {
+        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+            | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        break;
+    }
+    }
+
+    barrier.image = image->image;
+    barrier.subresourceRange = subresource_range;
+
+    vkCmdPipelineBarrier(
+        cmd_buffer,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        0,
+        0, NULL,
+        0, NULL,
+        1, &barrier);
+
+    VK_CHECK(vkEndCommandBuffer(cmd_buffer));
+
+    VkSubmitInfo submit;
+    memset(&submit, 0, sizeof(submit));
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd_buffer;
+
+    VK_CHECK(vkQueueSubmit(device->graphics_queue, 1, &submit, fence));
+
+    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
+    vkDestroyFence(device->device, fence, NULL);
+
+    vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer);
 }
 // }}}
 
@@ -3026,6 +3207,8 @@ static uint64_t rgRenderpassHash(VkRenderPassCreateInfo *ci)
 
 static void rgPassResize(RgGraph *graph, RgPass *pass)
 {
+    if (pass->type != RG_PASS_TYPE_GRAPHICS) return; 
+
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         for (uint32_t j = 0; j < pass->num_framebuffers; ++j)
@@ -3057,9 +3240,9 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     }
     else
     {
-        for (uint32_t i = 0; i < pass->outputs.len; ++i)
+        for (uint32_t i = 0; i < pass->used_resources.len; ++i)
         {
-            RgPassResource pass_res = pass->outputs.ptr[i];
+            RgPassResource pass_res = pass->used_resources.ptr[i];
             RgResource *resource = &graph->resources.ptr[pass_res.index];
 
             if (resource->type == RG_RESOURCE_IMAGE)
@@ -3130,9 +3313,9 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         arrPush(&color_attachment_refs, backbuffer_ref);
     }
 
-    for (uint32_t i = 0; i < pass->outputs.len; ++i)
+    for (uint32_t i = 0; i < pass->used_resources.len; ++i)
     {
-        RgPassResource pass_res = pass->outputs.ptr[i];
+        RgPassResource pass_res = pass->used_resources.ptr[i];
         RgResource *resource = &graph->resources.ptr[pass_res.index];
 
         switch (pass_res.usage)
@@ -3244,19 +3427,20 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
                 arrPush(&views, graph->swapchain.image_views[i]);
             }
 
-            for (uint32_t i = 0; i < pass->outputs.len; ++i)
+            for (uint32_t i = 0; i < pass->used_resources.len; ++i)
             {
-                RgPassResource pass_res = pass->outputs.ptr[i];
+                RgPassResource pass_res = pass->used_resources.ptr[i];
                 RgResource *resource = &graph->resources.ptr[pass_res.index];
 
-                switch (pass_res.index)
+                switch (pass_res.usage)
                 {
                 case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
                 case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+                {
                     arrPush(&views, resource->frames[f].image->view);
                     break;
-                case RG_RESOURCE_USAGE_SAMPLED:
-                    break;
+                }
+                default: break;
                 }
             }
 
@@ -3273,6 +3457,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
             create_info.width = pass->extent.width;
             create_info.height = pass->extent.height;
             create_info.layers = 1;
+
+            assert(create_info.attachmentCount == renderpass_ci.attachmentCount);
 
             VK_CHECK(vkCreateFramebuffer(
                 graph->device->device, &create_info, NULL,
@@ -3295,9 +3481,9 @@ static void rgPassBuild(RgGraph *graph, RgPass *pass)
         pass->num_attachments++;
     }
 
-    for (uint32_t i = 0; i < pass->outputs.len; ++i)
+    for (uint32_t i = 0; i < pass->used_resources.len; ++i)
     {
-        RgPassResource pass_res = pass->outputs.ptr[i];
+        RgPassResource pass_res = pass->used_resources.ptr[i];
         switch (pass_res.usage)
         {
         case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
@@ -3344,8 +3530,7 @@ static void rgPassDestroy(RgGraph *graph, RgPass *pass)
         }
     }
 
-    arrFree(&pass->inputs);
-    arrFree(&pass->outputs);
+    arrFree(&pass->used_resources);
     free(pass->clear_values);
 }
 
@@ -3373,6 +3558,9 @@ static void resizeResource(RgGraph *graph, RgResource* resource)
             resource->frames[i].buffer =
                 rgBufferCreate(graph->device, &resource->buffer_info);
             break;
+
+        case RG_RESOURCE_EXTERNAL_BUFFER:
+        case RG_RESOURCE_EXTERNAL_IMAGE: break;
         }
     }
 }
@@ -3415,7 +3603,7 @@ RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *
     return graph;
 }
 
-RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback)
+RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType type, RgPassCallback *callback)
 {
     RgPassRef ref;
     ref.index = graph->passes.len;
@@ -3425,6 +3613,7 @@ RgPassRef rgGraphAddPass(RgGraph *graph, RgPassCallback *callback)
 
     pass.graph = graph;
     pass.callback = callback;
+    pass.type = type;
 
     arrPush(&graph->passes, pass);
 
@@ -3471,33 +3660,102 @@ RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info)
     return ref;
 }
 
+RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image)
+{
+    RgResourceRef ref;
+    ref.index = graph->resources.len;
+
+    RgResource resource;
+    memset(&resource, 0, sizeof(resource));
+    resource.type = RG_RESOURCE_EXTERNAL_IMAGE;
+
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
+    {
+        resource.frames[i].image = image;
+    }
+
+    arrPush(&graph->resources, resource);
+
+    return ref;
+}
+
+RgResourceRef rgGraphAddExternalBuffer(RgGraph *graph, RgBuffer *buffer)
+{
+    RgResourceRef ref;
+    ref.index = graph->resources.len;
+
+    RgResource resource;
+    memset(&resource, 0, sizeof(resource));
+    resource.type = RG_RESOURCE_EXTERNAL_BUFFER;
+
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
+    {
+        resource.frames[i].buffer = buffer;
+    }
+
+    arrPush(&graph->resources, resource);
+
+    return ref;
+}
+
 static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
 {
     switch (usage)
     {
     case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:{
-        assert(res->type == RG_RESOURCE_IMAGE);
-        res->image_info.usage |= RG_IMAGE_USAGE_COLOR_ATTACHMENT | RG_IMAGE_USAGE_SAMPLED;
-        res->image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
+        if (res->type == RG_RESOURCE_IMAGE)
+        {
+            res->image_info.usage |=
+                RG_IMAGE_USAGE_COLOR_ATTACHMENT | RG_IMAGE_USAGE_SAMPLED;
+            res->image_info.aspect |= RG_IMAGE_ASPECT_COLOR;
+        }
         break;
     }
 
     case RG_RESOURCE_USAGE_SAMPLED:{
-        assert(res->type == RG_RESOURCE_IMAGE);
-        res->image_info.usage |= RG_IMAGE_USAGE_SAMPLED;
+        if (res->type == RG_RESOURCE_IMAGE)
+        {
+            res->image_info.usage |= RG_IMAGE_USAGE_SAMPLED;
+        }
         break;
     }
 
     case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT: {
-        assert(res->type == RG_RESOURCE_IMAGE);
-        res->image_info.usage |= RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
-        res->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
+        if (res->type == RG_RESOURCE_IMAGE)
+        {
+            res->image_info.usage |= RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
+            res->image_info.aspect |= RG_IMAGE_ASPECT_DEPTH;
+        }
+        break;
+    }
+
+    case RG_RESOURCE_USAGE_TRANSFER_SRC: {
+        if (res->type == RG_RESOURCE_IMAGE)
+        {
+            res->image_info.usage |= RG_IMAGE_USAGE_TRANSFER_SRC;
+        }
+        if (res->type == RG_RESOURCE_BUFFER)
+        {
+            res->buffer_info.usage |= RG_BUFFER_USAGE_TRANSFER_SRC;
+        }
+        break;
+    }
+
+    case RG_RESOURCE_USAGE_TRANSFER_DST: {
+        if (res->type == RG_RESOURCE_IMAGE)
+        {
+            res->image_info.usage |= RG_IMAGE_USAGE_TRANSFER_DST;
+        }
+        if (res->type == RG_RESOURCE_BUFFER)
+        {
+            res->buffer_info.usage |= RG_BUFFER_USAGE_TRANSFER_DST;
+        }
         break;
     }
     }
 }
 
-void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage usage)
+void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage usage)
 {
     RgPass *pass = &graph->passes.ptr[pass_ref.index];
     RgResource *res = &graph->resources.ptr[resource_ref.index];
@@ -3508,21 +3766,7 @@ void rgGraphAddPassInput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resou
     pass_res.index = resource_ref.index;
     pass_res.usage = usage;
 
-    arrPush(&pass->inputs, pass_res);
-}
-
-void rgGraphAddPassOutput(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage usage)
-{
-    RgPass *pass = &graph->passes.ptr[pass_ref.index];
-    RgResource *res = &graph->resources.ptr[resource_ref.index];
-
-    ensureResourceUsage(res, usage);
-
-    RgPassResource pass_res;
-    pass_res.index = resource_ref.index;
-    pass_res.usage = usage;
-
-    arrPush(&pass->outputs, pass_res);
+    arrPush(&pass->used_resources, pass_res);
 }
 
 void rgGraphBuild(RgGraph *graph)
@@ -3616,6 +3860,9 @@ void rgGraphDestroy(RgGraph *graph)
                     graph->resources.ptr[i].frames[f].buffer = NULL;
                 }
                 break;
+
+            case RG_RESOURCE_EXTERNAL_BUFFER:
+            case RG_RESOURCE_EXTERNAL_IMAGE: break;
             }
         }
     }
@@ -3647,15 +3894,99 @@ static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
     graph->buffer_barriers.len = 0;
     graph->image_barriers.len = 0;
 
-    for (uint32_t i = 0; i < pass->inputs.len; ++i)
+    for (uint32_t i = 0; i < pass->used_resources.len; ++i)
     {
-        RgPassResource pass_res = pass->inputs.ptr[i];
-        switch (pass_res.usage)
+        RgPassResource pass_res = pass->used_resources.ptr[i];
+        RgResource *resource = &graph->resources.ptr[pass_res.index];
+
+        switch (resource->type)
         {
-        case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
-        case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
-        case RG_RESOURCE_USAGE_SAMPLED:
+        case RG_RESOURCE_IMAGE:
+        case RG_RESOURCE_EXTERNAL_IMAGE:
+        {
+            RgImage *image = resource->frames[graph->current_frame].image;
+            assert(image);
+
+            VkImageMemoryBarrier barrier;
+            memset(&barrier, 0, sizeof(barrier));
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image->image;
+            barrier.subresourceRange.aspectMask = image->aspect;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = image->info.mip_count;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = image->info.layer_count;
+
+            switch (pass_res.usage)
+            {
+            case RG_RESOURCE_USAGE_TRANSFER_SRC:
+            {
+                barrier.srcAccessMask = 0;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+                arrPush(&graph->image_barriers, barrier);
+                break;
+            }
+
+            case RG_RESOURCE_USAGE_TRANSFER_DST:
+            {
+                barrier.srcAccessMask = 0;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+                arrPush(&graph->image_barriers, barrier);
+                break;
+            }
+
+            default: break;
+            }
             break;
+        }
+
+        case RG_RESOURCE_BUFFER:
+        case RG_RESOURCE_EXTERNAL_BUFFER:
+        {
+            RgBuffer *buffer = resource->frames[graph->current_frame].buffer;
+            assert(buffer);
+
+            VkBufferMemoryBarrier barrier;
+            memset(&barrier, 0, sizeof(barrier));
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = buffer->buffer;
+            barrier.offset = 0;
+            barrier.size = VK_WHOLE_SIZE;
+
+            switch (pass_res.usage)
+            {
+            case RG_RESOURCE_USAGE_TRANSFER_SRC:
+            {
+                barrier.srcAccessMask = 0;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+                arrPush(&graph->buffer_barriers, barrier);
+                break;
+            }
+
+            case RG_RESOURCE_USAGE_TRANSFER_DST:
+            {
+                barrier.srcAccessMask = 0;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+                arrPush(&graph->buffer_barriers, barrier);
+                break;
+            }
+
+            default: break;
+            }
+            break;
+        }
         }
     }
 
@@ -3675,63 +4006,71 @@ static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
     // Begin render pass (if applicable)
     //
 
-    if (pass->is_backbuffer)
+    if (pass->type == RG_PASS_TYPE_GRAPHICS)
     {
-        assert(graph->has_swapchain);
-        pass->current_framebuffer = pass->frames[graph->current_frame]
-            .framebuffers[graph->swapchain.current_image_index];
+        if (pass->is_backbuffer)
+        {
+            assert(graph->has_swapchain);
+            pass->current_framebuffer = pass->frames[graph->current_frame]
+                .framebuffers[graph->swapchain.current_image_index];
+        }
+        else
+        {
+            pass->current_framebuffer = pass->frames[graph->current_frame]
+                .framebuffers[0];
+        }
+
+        memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
+
+        if (pass->has_depth_attachment)
+        {
+            pass->clear_values[pass->depth_attachment_index].depthStencil.depth =
+                1.0f;
+            pass->clear_values[pass->depth_attachment_index].depthStencil.stencil = 0;
+        }
+
+        VkRenderPassBeginInfo render_pass_info;
+        memset(&render_pass_info, 0, sizeof(render_pass_info));
+        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        render_pass_info.renderPass = pass->renderpass;
+        render_pass_info.framebuffer = pass->current_framebuffer;
+        render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
+        render_pass_info.renderArea.extent = pass->extent;
+        render_pass_info.clearValueCount = pass->num_attachments;
+        render_pass_info.pClearValues = pass->clear_values;
+
+        cmd_buffer->current_pass = pass;
+        vkCmdBeginRenderPass(
+            cmd_buffer->cmd_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport viewport;
+        memset(&viewport, 0, sizeof(viewport));
+        viewport.x = 0;
+        viewport.y = 0;
+        viewport.width = (float)pass->extent.width;
+        viewport.height = (float)pass->extent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd_buffer->cmd_buffer, 0, 1, &viewport);
+
+        VkRect2D scissor;
+        memset(&scissor, 0, sizeof(scissor));
+        scissor.offset.x = 0;
+        scissor.offset.y = 0;
+        scissor.extent = pass->extent;
+
+        vkCmdSetScissor(cmd_buffer->cmd_buffer, 0, 1, &scissor);
     }
-    else
+
+    if (pass->callback)
     {
-        pass->current_framebuffer = pass->frames[graph->current_frame]
-            .framebuffers[0];
+        pass->callback(graph->user_data, cmd_buffer);
     }
 
-    memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
-
-    if (pass->has_depth_attachment)
+    if (pass->type == RG_PASS_TYPE_GRAPHICS)
     {
-        pass->clear_values[pass->depth_attachment_index].depthStencil.depth =
-            1.0f;
-        pass->clear_values[pass->depth_attachment_index].depthStencil.stencil = 0;
+        vkCmdEndRenderPass(cmd_buffer->cmd_buffer);
     }
-
-    VkRenderPassBeginInfo render_pass_info;
-    memset(&render_pass_info, 0, sizeof(render_pass_info));
-    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    render_pass_info.renderPass = pass->renderpass;
-    render_pass_info.framebuffer = pass->current_framebuffer;
-    render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
-    render_pass_info.renderArea.extent = pass->extent;
-    render_pass_info.clearValueCount = pass->num_attachments;
-    render_pass_info.pClearValues = pass->clear_values;
-
-    cmd_buffer->current_pass = pass;
-    vkCmdBeginRenderPass(
-        cmd_buffer->cmd_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-
-    VkViewport viewport;
-    memset(&viewport, 0, sizeof(viewport));
-    viewport.x = 0;
-    viewport.y = 0;
-    viewport.width = (float)pass->extent.width;
-    viewport.height = (float)pass->extent.height;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd_buffer->cmd_buffer, 0, 1, &viewport);
-
-    VkRect2D scissor;
-    memset(&scissor, 0, sizeof(scissor));
-    scissor.offset.x = 0;
-    scissor.offset.y = 0;
-    scissor.extent = pass->extent;
-
-    vkCmdSetScissor(cmd_buffer->cmd_buffer, 0, 1, &scissor);
-
-    assert(pass->callback);
-    pass->callback(graph->user_data, cmd_buffer);
-
-    vkCmdEndRenderPass(cmd_buffer->cmd_buffer);
     cmd_buffer->current_pass = NULL;
 }
 
@@ -3877,6 +4216,7 @@ RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource_ref)
 
     switch (resource->type)
     {
+    case RG_RESOURCE_EXTERNAL_BUFFER:
     case RG_RESOURCE_BUFFER: {
         assert(resource->frames[graph->current_frame].buffer);
         return resource->frames[graph->current_frame].buffer;
@@ -3895,6 +4235,7 @@ RgImage *rgGraphGetImage(RgGraph *graph, RgResourceRef resource_ref)
 
     switch (resource->type)
     {
+    case RG_RESOURCE_EXTERNAL_IMAGE:
     case RG_RESOURCE_IMAGE: {
         assert(resource->frames[graph->current_frame].image);
         return resource->frames[graph->current_frame].image;
