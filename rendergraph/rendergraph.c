@@ -3244,7 +3244,10 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
             RgPassResource pass_res = pass->used_resources.ptr[i];
             RgResource *resource = &graph->resources.ptr[pass_res.index];
 
-            if (resource->type == RG_RESOURCE_IMAGE)
+            switch (resource->type)
+            {
+            case RG_RESOURCE_IMAGE:
+            case RG_RESOURCE_EXTERNAL_IMAGE:
             {
                 switch (pass_res.post_usage)
                 {
@@ -3260,6 +3263,10 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
                 default: break;
                 }
+                break;
+            }
+
+            default: break;
             }
         }
     }
@@ -3672,6 +3679,16 @@ RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image)
     {
         resource.frames[i].image = image;
     }
+
+    resource.image_info.scaling_mode = RG_GRAPH_IMAGE_SCALING_MODE_ABSOLUTE;
+    resource.image_info.width = (float)image->info.width;
+    resource.image_info.height = (float)image->info.height;
+    resource.image_info.depth = image->info.depth;
+    resource.image_info.sample_count = image->info.sample_count;
+    resource.image_info.mip_count = image->info.mip_count;
+    resource.image_info.layer_count = image->info.layer_count;
+    resource.image_info.aspect = image->info.aspect;
+    resource.image_info.format = image->info.format;
 
     arrPush(&graph->resources, resource);
 
