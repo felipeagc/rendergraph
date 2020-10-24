@@ -1116,7 +1116,7 @@ static void rgSwapchainResize(RgSwapchain *swapchain)
         for (uint32_t i = 0; i < num_formats; ++i)
         {
             VkSurfaceFormatKHR *format = &formats[i];
-            if (format->format == VK_FORMAT_B8G8R8A8_UNORM)
+            if (format->format == VK_FORMAT_B8G8R8A8_SRGB)
             {
                 surface_format = *format;
                 break;
@@ -1967,6 +1967,11 @@ RgSampler *rgSamplerCreate(RgDevice *device, RgSamplerInfo *info)
         sampler->info.max_lod = 1.0f;
     }
 
+    if (sampler->info.max_anisotropy == 0.0f)
+    {
+        sampler->info.max_anisotropy = 1.0f;
+    }
+
     assert(sampler->info.max_lod >= sampler->info.min_lod);
 
     VkSamplerCreateInfo ci;
@@ -1980,7 +1985,7 @@ RgSampler *rgSamplerCreate(RgDevice *device, RgSamplerInfo *info)
     ci.addressModeW = address_mode_to_vk(sampler->info.address_mode);
     ci.minLod = sampler->info.min_lod;
     ci.maxLod = sampler->info.max_lod;
-    ci.maxAnisotropy = 1.0f;
+    ci.maxAnisotropy = sampler->info.max_anisotropy;
     ci.anisotropyEnable = (VkBool32)sampler->info.anisotropy;
     ci.borderColor = border_color_to_vk(sampler->info.border_color);
     VK_CHECK(vkCreateSampler(device->device, &ci, NULL, &sampler->sampler));

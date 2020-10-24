@@ -126,6 +126,7 @@ typedef struct RgImageInfo
 typedef struct RgSamplerInfo
 {
     bool anisotropy;
+    float max_anisotropy;
     float min_lod;
     float max_lod;
     RgFilter mag_filter;
