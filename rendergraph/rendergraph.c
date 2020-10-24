@@ -1877,6 +1877,7 @@ void rgImageUpload(
 void rgImageBarrier(
     RgDevice *device,
     RgImage *image,
+    const RgImageRegion *region,
     RgResourceUsage from,
     RgResourceUsage to)
 {
@@ -1906,10 +1907,10 @@ void rgImageBarrier(
     VkImageSubresourceRange subresource_range;
     memset(&subresource_range, 0, sizeof(subresource_range));
     subresource_range.aspectMask = image->aspect;
-    subresource_range.baseMipLevel = 0;
-    subresource_range.levelCount = image->info.mip_count;
-    subresource_range.baseArrayLayer = 0;
-    subresource_range.layerCount = image->info.layer_count;
+    subresource_range.baseMipLevel = region->base_mip_level;
+    subresource_range.levelCount = region->mip_count;
+    subresource_range.baseArrayLayer = region->base_array_layer;
+    subresource_range.layerCount = region->layer_count;
 
     VkImageMemoryBarrier barrier;
     memset(&barrier, 0, sizeof(barrier));
@@ -1930,6 +1931,148 @@ void rgImageBarrier(
         0, NULL,
         0, NULL,
         1, &barrier);
+
+    VK_CHECK(vkEndCommandBuffer(cmd_buffer));
+
+    VkSubmitInfo submit;
+    memset(&submit, 0, sizeof(submit));
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd_buffer;
+
+    VK_CHECK(vkQueueSubmit(device->graphics_queue, 1, &submit, fence));
+
+    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
+    vkDestroyFence(device->device, fence, NULL);
+
+    vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer);
+}
+
+void rgImageGenerateMipMaps(RgDevice *device, RgImage *image)
+{
+    VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+
+    VkFenceCreateInfo fence_info;
+    memset(&fence_info, 0, sizeof(fence_info));
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VK_CHECK(vkCreateFence(device->device, &fence_info, NULL, &fence));
+
+    VkCommandBufferAllocateInfo alloc_info;
+    memset(&alloc_info, 0, sizeof(alloc_info));
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool = device->graphics_command_pool;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = 1;
+
+    VK_CHECK(vkAllocateCommandBuffers(device->device, &alloc_info, &cmd_buffer));
+
+    VkCommandBufferBeginInfo begin_info;
+    memset(&begin_info, 0, sizeof(begin_info));
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cmd_buffer, &begin_info));
+
+    VkImageSubresourceRange subresource_range;
+    memset(&subresource_range, 0, sizeof(subresource_range));
+    subresource_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    subresource_range.levelCount = 1;
+    subresource_range.layerCount = 1;
+
+    for (uint32_t i = 1; i < image->info.mip_count; i++) {
+        VkImageBlit image_blit;
+        memset(&image_blit, 0, sizeof(image_blit));
+
+        image_blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image_blit.srcSubresource.layerCount = 1;
+        image_blit.srcSubresource.mipLevel = i - 1;
+        image_blit.srcOffsets[1].x = (int32_t)(image->info.width >> (i - 1));
+        image_blit.srcOffsets[1].y = (int32_t)(image->info.height >> (i - 1));
+        image_blit.srcOffsets[1].z = 1;
+
+        image_blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image_blit.dstSubresource.layerCount = 1;
+        image_blit.dstSubresource.mipLevel = i;
+        image_blit.dstOffsets[1].x = (int32_t)(image->info.width >> i);
+        image_blit.dstOffsets[1].y = (int32_t)(image->info.height >> i);
+        image_blit.dstOffsets[1].z = 1;
+
+        VkImageSubresourceRange mip_sub_range;
+        memset(&mip_sub_range, 0, sizeof(mip_sub_range));
+        mip_sub_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        mip_sub_range.baseMipLevel = i;
+        mip_sub_range.levelCount = 1;
+        mip_sub_range.layerCount = 1;
+
+        {
+            VkImageMemoryBarrier image_memory_barrier;
+            memset(&image_memory_barrier, 0, sizeof(image_memory_barrier));
+            image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            image_memory_barrier.srcAccessMask = 0;
+            image_memory_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            image_memory_barrier.image = image->image;
+            image_memory_barrier.subresourceRange = mip_sub_range;
+            vkCmdPipelineBarrier(
+                cmd_buffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0, NULL,
+                0, NULL,
+                1, &image_memory_barrier);
+        }
+
+        vkCmdBlitImage(
+            cmd_buffer,
+            image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &image_blit,
+            VK_FILTER_LINEAR);
+
+        {
+            VkImageMemoryBarrier image_memory_barrier;
+            memset(&image_memory_barrier, 0, sizeof(image_memory_barrier));
+            image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            image_memory_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            image_memory_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            image_memory_barrier.image = image->image;
+            image_memory_barrier.subresourceRange = mip_sub_range;
+            vkCmdPipelineBarrier(
+                cmd_buffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0, NULL,
+                0, NULL,
+                1, &image_memory_barrier);
+        }
+    }
+
+    subresource_range.levelCount = image->info.mip_count;
+
+    {
+        VkImageMemoryBarrier image_memory_barrier;
+        memset(&image_memory_barrier, 0, sizeof(image_memory_barrier));
+        image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        image_memory_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        image_memory_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        image_memory_barrier.image = image->image;
+        image_memory_barrier.subresourceRange = subresource_range;
+        vkCmdPipelineBarrier(
+            cmd_buffer,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0,
+            0, NULL,
+            0, NULL,
+            1, &image_memory_barrier);
+    }
 
     VK_CHECK(vkEndCommandBuffer(cmd_buffer));
 

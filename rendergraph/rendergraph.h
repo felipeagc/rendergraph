@@ -339,6 +339,14 @@ typedef struct RgBufferCopy
     uint32_t image_height;
 } RgBufferCopy;
 
+typedef struct RgImageRegion
+{
+    uint32_t base_mip_level;
+    uint32_t mip_count;
+    uint32_t base_array_layer;
+    uint32_t layer_count;
+} RgImageRegion;
+
 typedef enum RgObjectType
 {
     RG_OBJECT_TYPE_UNKNOWN = 0,
@@ -354,7 +362,8 @@ void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const ch
 RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info);
 void rgImageDestroy(RgDevice *device, RgImage *image);
 void rgImageUpload(RgDevice *device, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data);
-void rgImageBarrier(RgDevice *device, RgImage *image, RgResourceUsage from, RgResourceUsage to);
+void rgImageBarrier(RgDevice *device, RgImage *image, const RgImageRegion *region, RgResourceUsage from, RgResourceUsage to);
+void rgImageGenerateMipMaps(RgDevice *device, RgImage *image);
 
 RgSampler *rgSamplerCreate(RgDevice *device, RgSamplerInfo *info);
 void rgSamplerDestroy(RgDevice *device, RgSampler *sampler);
