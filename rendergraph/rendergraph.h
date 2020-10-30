@@ -32,6 +32,20 @@ typedef struct RgPassRef
     uint32_t index;
 } RgPassRef;
 
+typedef enum RgWindowSystem
+{
+    RG_WINDOW_SYSTEM_NONE,
+    RG_WINDOW_SYSTEM_WIN32,
+    RG_WINDOW_SYSTEM_X11,
+    RG_WINDOW_SYSTEM_WAYLAND,
+} RgWindowSystem;
+
+typedef struct RgDeviceInfo
+{
+    bool enable_validation;
+    RgWindowSystem window_system;
+} RgDeviceInfo;
+
 typedef struct RgPlatformWindowInfo
 {
     struct
@@ -41,9 +55,24 @@ typedef struct RgPlatformWindowInfo
     } x11;
     struct
     {
+        void *window;
+        void *display;
+    } wl;
+    struct
+    {
         void*window;
     } win32;
 } RgPlatformWindowInfo;
+
+typedef struct RgGraphInfo
+{
+    // Dimensions can be zero if not using a swapchain
+    uint32_t width;
+    uint32_t height;
+
+    void *user_data;
+    RgPlatformWindowInfo *window;
+} RgGraphInfo;
 
 typedef enum RgFormat
 {
@@ -354,7 +383,7 @@ typedef enum RgObjectType
     RG_OBJECT_TYPE_BUFFER = 2,
 } RgObjectType;
 
-RgDevice *rgDeviceCreate();
+RgDevice *rgDeviceCreate(RgDeviceInfo *info);
 void rgDeviceDestroy(RgDevice* device);
 
 void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const char* name);
@@ -377,16 +406,16 @@ void rgBufferUpload(RgDevice *device, RgBuffer *buffer, size_t offset, size_t si
 RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info);
 void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline);
 
-RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *window);
+RgGraph *rgGraphCreate(void);
 RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType pass_type, RgPassCallback *callback);
 RgResourceRef rgGraphAddImage(RgGraph *graph, RgGraphImageInfo *info);
 RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info);
 RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image);
 RgResourceRef rgGraphAddExternalBuffer(RgGraph *graph, RgBuffer *buffer);
 void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage pre_usage, RgResourceUsage post_usage);
-void rgGraphBuild(RgGraph *graph);
+void rgGraphBuild(RgGraph *graph, RgDevice *device, RgGraphInfo *info);
 void rgGraphDestroy(RgGraph *graph);
-void rgGraphResize(RgGraph *graph);
+void rgGraphResize(RgGraph *graph, uint32_t width, uint32_t height);
 void rgGraphExecute(RgGraph *graph);
 void rgGraphWaitAll(RgGraph *graph);
 RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource);

@@ -10,11 +10,10 @@
 #define VK_NO_PROTOTYPES
 
 #if defined(__linux__)
-#define RG_PLATFORM_XLIB
 #define VK_USE_PLATFORM_XLIB_KHR
-#include <X11/Xlib.h>
+#define VK_USE_PLATFORM_WAYLAND_KHR
+
 #elif defined(_WIN32)
-#define RG_PLATFORM_WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #else
 #error Unsupported OS
@@ -243,6 +242,8 @@ static uint64_t *rgHashmapGet(RgHashmap *hashmap, uint64_t hash)
 // Types {{{
 struct RgDevice
 {
+    RgDeviceInfo info;
+
     VkInstance instance;
     VkDebugUtilsMessengerEXT debug_callback;
 
@@ -438,14 +439,13 @@ struct RgPass
 struct RgGraph
 {
     RgDevice *device;
+    void *user_data;
 
     bool built;
     bool has_swapchain;
     RgSwapchain swapchain;
 
     uint32_t num_frames;
-
-    void *user_data;
 
     ARRAY_OF(RgNode) nodes;
     ARRAY_OF(RgPass) passes;
@@ -628,23 +628,26 @@ static uint32_t get_queue_family_index(RgDevice *device, VkQueueFlagBits queue_f
     return UINT32_MAX;
 }
 
-RgDevice *rgDeviceCreate()
+RgDevice *rgDeviceCreate(RgDeviceInfo *info)
 {
     RgDevice *device = (RgDevice *)malloc(sizeof(RgDevice));
     memset(device, 0, sizeof(*device));
 
+    device->info = *info;
+
     VK_CHECK(volkInitialize());
 
-#ifdef RENDERGRAPH_FEATURE_VALIDATION
-    if (check_validation_layer_support())
+    if (device->info.enable_validation)
     {
-        fprintf(stderr, "Using validation layers\n");
+        if (check_validation_layer_support())
+        {
+            fprintf(stderr, "Using validation layers\n");
+        }
+        else
+        {
+            fprintf(stderr, "Validation layers requested but not available\n");
+        }
     }
-    else
-    {
-        fprintf(stderr, "Validation layers requested but not available\n");
-    }
-#endif
 
     VkApplicationInfo app_info;
     memset(&app_info, 0, sizeof(app_info));
@@ -665,22 +668,38 @@ RgDevice *rgDeviceCreate()
     instance_info.enabledLayerCount = RG_LENGTH(RG_REQUIRED_VALIDATION_LAYERS);
     instance_info.ppEnabledLayerNames = RG_REQUIRED_VALIDATION_LAYERS;
 
-#if defined(RG_PLATFORM_XLIB)
-    const char *platform_extensions[2] = {
-        "VK_KHR_surface",
-        "VK_KHR_xlib_surface",
-    };
-#elif defined(RG_PLATFORM_WIN32)
-    const char *platform_extensions[2] = {
-        "VK_KHR_surface",
-        "VK_KHR_win32_surface",
-    };
-#else
-    const char *platform_extensions[0];
-#endif
+    uint32_t platform_extension_count = 0;
+    const char *platform_extensions[2];
+
+    switch (device->info.window_system)
+    {
+        case RG_WINDOW_SYSTEM_NONE: break;
+
+        case RG_WINDOW_SYSTEM_WIN32:
+        {
+            platform_extension_count = 2;
+            platform_extensions[0] = "VK_KHR_surface";
+            platform_extensions[1] = "VK_KHR_win32_surface";
+            break;
+        }
+        case RG_WINDOW_SYSTEM_X11:
+        {
+            platform_extension_count = 2;
+            platform_extensions[0] = "VK_KHR_surface";
+            platform_extensions[1] = "VK_KHR_xlib_surface";
+            break;
+        }
+        case RG_WINDOW_SYSTEM_WAYLAND:
+        {
+            platform_extension_count = 2;
+            platform_extensions[0] = "VK_KHR_surface";
+            platform_extensions[1] = "VK_KHR_wayland_surface";
+            break;
+        }
+    }
 
     uint32_t num_instance_extensions = 0;
-    num_instance_extensions += RG_LENGTH(platform_extensions);
+    num_instance_extensions += platform_extension_count;
     num_instance_extensions += RG_LENGTH(RG_REQUIRED_INSTANCE_EXTENSIONS);
 
     char **instance_extensions =
@@ -954,25 +973,6 @@ void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const ch
 
 // Swapchain setup {{{
 static void
-rgGetWindowSize(RgPlatformWindowInfo *window, uint32_t *width, uint32_t *height)
-{
-#if defined(RG_PLATFORM_XLIB)
-    XWindowAttributes attribs;
-    XGetWindowAttributes(
-        (Display *)window->x11.display, (Window)window->x11.window, &attribs);
-
-    if (width) *width = (uint32_t)attribs.width;
-    if (height) *height = (uint32_t)attribs.height;
-#elif defined(RG_PLATFORM_WIN32)
-    RECT area;
-    GetClientRect(window->win32.window, &area);
-
-    if (width) *width = (uint32_t)area.right;
-    if (height) *height = (uint32_t)area.bottom;
-#endif
-}
-
-static void
 rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatformWindowInfo *window)
 {
     memset(swapchain, 0, sizeof(*swapchain));
@@ -983,25 +983,68 @@ rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatformWindowInfo *
     }
     swapchain->device = device;
 
-#if defined(RG_PLATFORM_XLIB)
-    VkXlibSurfaceCreateInfoKHR surface_ci;
-    memset(&surface_ci, 0, sizeof(surface_ci));
-    surface_ci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-    surface_ci.dpy = (Display *)window->x11.display;
-    surface_ci.window = (Window)window->x11.window;
+    switch (device->info.window_system)
+    {
+        case RG_WINDOW_SYSTEM_NONE: assert(0); break;
 
-    VK_CHECK(
-        vkCreateXlibSurfaceKHR(device->instance, &surface_ci, NULL, &swapchain->surface));
-#elif defined(RG_PLATFORM_WIN32)
-    VkWin32SurfaceCreateInfoKHR surface_ci;
-    memset(&surface_ci, 0, sizeof(surface_ci));
-    surface_ci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    surface_ci.hinstance = GetModuleHandle(NULL);
-    surface_ci.hwnd = (HWND)window->win32.window;
+        case RG_WINDOW_SYSTEM_WIN32:
+        {
+#if defined(_WIN32)
+            VkWin32SurfaceCreateInfoKHR surface_ci;
+            memset(&surface_ci, 0, sizeof(surface_ci));
+            surface_ci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+            surface_ci.hinstance = GetModuleHandle(NULL);
+            surface_ci.hwnd = (HWND)window->win32.window;
 
-    VK_CHECK(vkCreateWin32SurfaceKHR(
-        device->instance, &surface_ci, NULL, &swapchain->surface));
+            VK_CHECK(vkCreateWin32SurfaceKHR(
+                        device->instance,
+                        &surface_ci,
+                        NULL,
+                        &swapchain->surface));
+#else
+            assert(0);
 #endif
+            break;
+        }
+        case RG_WINDOW_SYSTEM_X11:
+        {
+#if defined(__linux__)
+            VkXlibSurfaceCreateInfoKHR surface_ci;
+            memset(&surface_ci, 0, sizeof(surface_ci));
+            surface_ci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+            surface_ci.dpy = (Display *)window->x11.display;
+            surface_ci.window = (Window)window->x11.window;
+
+            VK_CHECK(vkCreateXlibSurfaceKHR(
+                         device->instance,
+                         &surface_ci,
+                         NULL,
+                         &swapchain->surface));
+#else
+            assert(0);
+#endif
+            break;
+        }
+        case RG_WINDOW_SYSTEM_WAYLAND:
+        {
+#if defined(__linux__)
+            VkWaylandSurfaceCreateInfoKHR surface_ci;
+            memset(&surface_ci, 0, sizeof(surface_ci));
+            surface_ci.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+            surface_ci.display = (struct wl_display*)window->wl.display;
+            surface_ci.surface = (struct wl_surface*)window->wl.window;
+
+            VK_CHECK(vkCreateWaylandSurfaceKHR(
+                         device->instance,
+                         &surface_ci,
+                         NULL,
+                         &swapchain->surface));
+#else
+            assert(0);
+#endif
+            break;
+        }
+    }
 
     swapchain->present_family_index = UINT32_MAX;
 
@@ -1058,11 +1101,8 @@ static void rgSwapchainDestroy(RgDevice *device, RgSwapchain *swapchain)
     free(swapchain->image_views);
 }
 
-static void rgSwapchainResize(RgSwapchain *swapchain)
+static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t height)
 {
-    uint32_t width, height;
-    rgGetWindowSize(&swapchain->window, &width, &height);
-
     VK_CHECK(vkDeviceWaitIdle(swapchain->device->device));
 
     // Destroy old stuff first
@@ -3246,6 +3286,7 @@ rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_c
     node->pass_indices = (uint32_t *)malloc(sizeof(*node->pass_indices) * pass_count);
     memcpy(node->pass_indices, pass_indices, sizeof(*node->pass_indices) * pass_count);
 
+    assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         allocateCmdBuffer(graph->device, &node->frames[i].cmd_buffer);
@@ -3304,6 +3345,7 @@ static void rgNodeDestroy(RgGraph *graph, RgNode *node)
     RgDevice *device = graph->device;
     VK_CHECK(vkDeviceWaitIdle(device->device));
 
+    assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         vkDestroySemaphore(
@@ -3356,6 +3398,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 {
     if (pass->type != RG_PASS_TYPE_GRAPHICS) return; 
 
+    assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         for (uint32_t j = 0; j < pass->num_framebuffers; ++j)
@@ -3428,6 +3471,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         pass->num_framebuffers = 1;
     }
 
+    assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         pass->frames[i].framebuffers =
@@ -3569,6 +3613,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
 
     pass->hash = rgRenderpassHash(&renderpass_ci);
 
+    assert(graph->num_frames > 0);
     for (uint32_t f = 0; f < graph->num_frames; ++f)
     {
         for (uint32_t i = 0; i < pass->num_framebuffers; ++i)
@@ -3667,6 +3712,7 @@ static void rgPassDestroy(RgGraph *graph, RgPass *pass)
         pass->renderpass = VK_NULL_HANDLE;
     }
 
+    assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         for (uint32_t j = 0; j < pass->num_framebuffers; ++j)
@@ -3690,6 +3736,7 @@ static void rgPassDestroy(RgGraph *graph, RgPass *pass)
 
 static void resizeResource(RgGraph *graph, RgResource* resource)
 {
+    assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         switch (resource->type)
@@ -3719,11 +3766,11 @@ static void resizeResource(RgGraph *graph, RgResource* resource)
     }
 }
 
-void rgGraphResize(RgGraph *graph)
+void rgGraphResize(RgGraph *graph, uint32_t width, uint32_t height)
 {
     if (graph->has_swapchain)
     {
-        rgSwapchainResize(&graph->swapchain);
+        rgSwapchainResize(&graph->swapchain, width, height);
     }
 
     for (uint32_t i = 0; i < graph->resources.len; ++i)
@@ -3738,21 +3785,10 @@ void rgGraphResize(RgGraph *graph)
     }
 }
 
-RgGraph *rgGraphCreate(RgDevice *device, void *user_data, RgPlatformWindowInfo *window)
+RgGraph *rgGraphCreate(void)
 {
     RgGraph *graph = (RgGraph *)malloc(sizeof(RgGraph));
     memset(graph, 0, sizeof(*graph));
-
-    graph->device = device;
-    graph->user_data = user_data;
-
-    graph->num_frames = 1;
-    if (window)
-    {
-        graph->has_swapchain = true;
-        rgSwapchainInit(device, &graph->swapchain, window);
-        graph->num_frames = RG_FRAMES_IN_FLIGHT;
-    }
 
     return graph;
 }
@@ -3823,7 +3859,7 @@ RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image)
     memset(&resource, 0, sizeof(resource));
     resource.type = RG_RESOURCE_EXTERNAL_IMAGE;
 
-    for (uint32_t i = 0; i < graph->num_frames; ++i)
+    for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
     {
         resource.frames[i].image = image;
     }
@@ -3852,7 +3888,7 @@ RgResourceRef rgGraphAddExternalBuffer(RgGraph *graph, RgBuffer *buffer)
     memset(&resource, 0, sizeof(resource));
     resource.type = RG_RESOURCE_EXTERNAL_BUFFER;
 
-    for (uint32_t i = 0; i < graph->num_frames; ++i)
+    for (uint32_t i = 0; i < RG_FRAMES_IN_FLIGHT; ++i)
     {
         resource.frames[i].buffer = buffer;
     }
@@ -3941,8 +3977,20 @@ void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass_ref, RgResourceRef re
     arrPush(&pass->used_resources, pass_res);
 }
 
-void rgGraphBuild(RgGraph *graph)
+void rgGraphBuild(RgGraph *graph, RgDevice *device, RgGraphInfo *info)
 {
+    graph->device = device;
+    graph->user_data = info->user_data;
+
+    graph->num_frames = 1;
+    if (info->window)
+    {
+        assert(info->width > 0 && info->height > 0);
+        graph->has_swapchain = true;
+        rgSwapchainInit(graph->device, &graph->swapchain, info->window);
+        graph->num_frames = RG_FRAMES_IN_FLIGHT;
+    }
+
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
         VkSemaphoreCreateInfo semaphore_info;
@@ -3956,7 +4004,6 @@ void rgGraphBuild(RgGraph *graph)
     }
 
     assert(graph->passes.len > 0);
-
     assert(graph->nodes.len == 0);
 
     RgNode node;
@@ -3986,7 +4033,7 @@ void rgGraphBuild(RgGraph *graph)
         rgPassBuild(graph, &graph->passes.ptr[i]);
     }
 
-    rgGraphResize(graph);
+    rgGraphResize(graph, 0, 0);
 
     graph->built = true;
 }
@@ -4254,24 +4301,17 @@ void rgGraphExecute(RgGraph *graph)
                 VK_TRUE,
                 1 * 1000000000ULL));
 
-            VkResult res;
-            while (1)
+            VkResult res = vkAcquireNextImageKHR(
+                graph->device->device,
+                graph->swapchain.swapchain,
+                UINT64_MAX,
+                graph->image_available_semaphores[current_frame],
+                VK_NULL_HANDLE,
+                &graph->swapchain.current_image_index);
+
+            if (res == VK_ERROR_OUT_OF_DATE_KHR)
             {
-                res = vkAcquireNextImageKHR(
-                    graph->device->device,
-                    graph->swapchain.swapchain,
-                    UINT64_MAX,
-                    graph->image_available_semaphores[current_frame],
-                    VK_NULL_HANDLE,
-                    &graph->swapchain.current_image_index);
-
-                if (res != VK_ERROR_OUT_OF_DATE_KHR)
-                {
-                    break;
-                }
-
-                assert(graph->has_swapchain);
-                rgSwapchainResize(&graph->swapchain);
+                return;
             }
 
             VK_CHECK(res);
@@ -4342,12 +4382,7 @@ void rgGraphExecute(RgGraph *graph)
         assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
 
         VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
-        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
-        {
-            assert(graph->has_swapchain);
-            rgSwapchainResize(&graph->swapchain);
-        }
-        else
+        if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR))
         {
             VK_CHECK(res);
         }
