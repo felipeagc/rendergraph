@@ -39,20 +39,6 @@ enum {
     RG_BUFFER_POOL_CHUNK_SIZE = 65536,
 };
 
-#ifdef RENDERGRAPH_FEATURE_VALIDATION
-static const char *RG_REQUIRED_INSTANCE_EXTENSIONS[1] = {
-    VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-};
-static const char *RG_REQUIRED_VALIDATION_LAYERS[1] = {
-    "VK_LAYER_KHRONOS_validation",
-};
-#else
-static const char *RG_EQUIRED_INSTANCE_EXTENSIONS[0] = {};
-static const char *RG_EQUIRED_VALIDATION_LAYERS[0] = {};
-#endif
-
-static const char *RG_REQUIRED_DEVICE_EXTENSIONS[1] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-
 #define VK_CHECK(result)                                                                 \
     do                                                                                   \
     {                                                                                    \
@@ -564,7 +550,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_message_callback(
     return VK_FALSE;
 }
 
-static bool check_validation_layer_support()
+static bool check_layer_support(
+    const char** required_layers,
+    uint32_t required_layer_count)
 {
     uint32_t count;
     vkEnumerateInstanceLayerProperties(&count, NULL);
@@ -572,9 +560,9 @@ static bool check_validation_layer_support()
         (VkLayerProperties *)malloc(sizeof(VkLayerProperties) * count);
     vkEnumerateInstanceLayerProperties(&count, available_layers);
 
-    for (uint32_t i = 0; i < RG_LENGTH(RG_REQUIRED_VALIDATION_LAYERS); ++i)
+    for (uint32_t i = 0; i < required_layer_count; ++i)
     {
-        const char *required_layer_name = RG_REQUIRED_VALIDATION_LAYERS[i];
+        const char *required_layer_name = required_layers[i];
         bool layer_found = false;
 
         for (uint32_t j = 0; j < count; ++j)
@@ -637,16 +625,25 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
 
     VK_CHECK(volkInitialize());
 
+    ARRAY_OF(const char*) layers;
+    memset(&layers, 0, sizeof(layers));
+
+    ARRAY_OF(const char*) instance_extensions;
+    memset(&instance_extensions, 0, sizeof(instance_extensions));
+
     if (device->info.enable_validation)
     {
-        if (check_validation_layer_support())
-        {
-            fprintf(stderr, "Using validation layers\n");
-        }
-        else
-        {
-            fprintf(stderr, "Validation layers requested but not available\n");
-        }
+        fprintf(stderr, "Using validation layers\n");
+        arrPush(&layers, "VK_LAYER_KHRONOS_validation");
+        arrPush(&instance_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+
+    if (!check_layer_support(layers.ptr, layers.len))
+    {
+        fprintf(stderr, "Validation layers requested but not available\n");
+        arrFree(&layers);
+        arrFree(&instance_extensions);
+        return NULL;
     }
 
     VkApplicationInfo app_info;
@@ -665,11 +662,8 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
     instance_info.flags = 0;
     instance_info.pApplicationInfo = &app_info;
 
-    instance_info.enabledLayerCount = RG_LENGTH(RG_REQUIRED_VALIDATION_LAYERS);
-    instance_info.ppEnabledLayerNames = RG_REQUIRED_VALIDATION_LAYERS;
-
-    uint32_t platform_extension_count = 0;
-    const char *platform_extensions[2];
+    instance_info.enabledLayerCount = layers.len;
+    instance_info.ppEnabledLayerNames = layers.ptr;
 
     switch (device->info.window_system)
     {
@@ -677,66 +671,49 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
 
         case RG_WINDOW_SYSTEM_WIN32:
         {
-            platform_extension_count = 2;
-            platform_extensions[0] = "VK_KHR_surface";
-            platform_extensions[1] = "VK_KHR_win32_surface";
+            arrPush(&instance_extensions, "VK_KHR_surface");
+            arrPush(&instance_extensions, "VK_KHR_win32_surface");
             break;
         }
         case RG_WINDOW_SYSTEM_X11:
         {
-            platform_extension_count = 2;
-            platform_extensions[0] = "VK_KHR_surface";
-            platform_extensions[1] = "VK_KHR_xlib_surface";
+            arrPush(&instance_extensions, "VK_KHR_surface");
+            arrPush(&instance_extensions, "VK_KHR_xlib_surface");
             break;
         }
         case RG_WINDOW_SYSTEM_WAYLAND:
         {
-            platform_extension_count = 2;
-            platform_extensions[0] = "VK_KHR_surface";
-            platform_extensions[1] = "VK_KHR_wayland_surface";
+            arrPush(&instance_extensions, "VK_KHR_surface");
+            arrPush(&instance_extensions, "VK_KHR_wayland_surface");
             break;
         }
     }
 
-    uint32_t num_instance_extensions = 0;
-    num_instance_extensions += platform_extension_count;
-    num_instance_extensions += RG_LENGTH(RG_REQUIRED_INSTANCE_EXTENSIONS);
-
-    char **instance_extensions =
-        (char **)malloc(num_instance_extensions * sizeof(*instance_extensions));
-
-    memcpy(
-        instance_extensions,
-        platform_extensions,
-        RG_LENGTH(platform_extensions) * sizeof(char *));
-    memcpy(
-        instance_extensions + RG_LENGTH(platform_extensions),
-        RG_REQUIRED_INSTANCE_EXTENSIONS,
-        RG_LENGTH(RG_REQUIRED_INSTANCE_EXTENSIONS) * sizeof(char *));
-
-    instance_info.enabledExtensionCount = num_instance_extensions;
-    instance_info.ppEnabledExtensionNames = (const char *const *)instance_extensions;
+    instance_info.enabledExtensionCount = instance_extensions.len;
+    instance_info.ppEnabledExtensionNames = (const char *const *)instance_extensions.ptr;
 
     VK_CHECK(vkCreateInstance(&instance_info, NULL, &device->instance));
 
+    arrFree(&layers);
+    arrFree(&instance_extensions);
+
     volkLoadInstance(device->instance);
 
-    free(instance_extensions);
+    if (device->info.enable_validation)
+    {
+        VkDebugUtilsMessengerCreateInfoEXT debug_create_info;
+        memset(&debug_create_info, 0, sizeof(debug_create_info));
+        debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        debug_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        debug_create_info.pfnUserCallback = &debug_message_callback;
 
-#ifdef RENDERGRAPH_FEATURE_VALIDATION
-    VkDebugUtilsMessengerCreateInfoEXT debug_create_info;
-    memset(&debug_create_info, 0, sizeof(debug_create_info));
-    debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    debug_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                                    VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                                    VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    debug_create_info.pfnUserCallback = &debug_message_callback;
-
-    VK_CHECK(vkCreateDebugUtilsMessengerEXT(
-        device->instance, &debug_create_info, NULL, &device->debug_callback));
-#endif
+        VK_CHECK(vkCreateDebugUtilsMessengerEXT(
+            device->instance, &debug_create_info, NULL, &device->debug_callback));
+    }
 
     uint32_t num_physical_devices = 0;
     vkEnumeratePhysicalDevices(device->instance, &num_physical_devices, NULL);
@@ -848,32 +825,62 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
     device_create_info.pQueueCreateInfos = queue_create_infos;
     device_create_info.pEnabledFeatures = &enabled_features;
 
-    uint32_t num_device_extensions = 0;
+    // Get available device extensions
+    uint32_t num_available_device_extensions = 0;
     vkEnumerateDeviceExtensionProperties(
-        device->physical_device, NULL, &num_device_extensions, NULL);
-    VkExtensionProperties *device_extensions = (VkExtensionProperties *)malloc(
-        sizeof(VkExtensionProperties) * num_device_extensions);
+        device->physical_device, NULL, &num_available_device_extensions, NULL);
+
+    VkExtensionProperties *available_device_extensions = (VkExtensionProperties *)malloc(
+            sizeof(VkExtensionProperties) * num_available_device_extensions);
     vkEnumerateDeviceExtensionProperties(
-        device->physical_device, NULL, &num_device_extensions, device_extensions);
+        device->physical_device,
+        NULL,
+        &num_available_device_extensions,
+        available_device_extensions);
 
-    uint32_t num_enabled_device_extensions = RG_LENGTH(RG_REQUIRED_DEVICE_EXTENSIONS);
-    char **enabled_device_extensions =
-        (char **)malloc(sizeof(char *) * num_enabled_device_extensions);
+    ARRAY_OF(const char*) device_extensions;
+    memset(&device_extensions, 0, sizeof(device_extensions));
 
-    memcpy(
-        enabled_device_extensions,
-        RG_REQUIRED_DEVICE_EXTENSIONS,
-        RG_LENGTH(RG_REQUIRED_DEVICE_EXTENSIONS) * sizeof(char *));
+    if (device->info.window_system != RG_WINDOW_SYSTEM_NONE)
+    {
+        arrPush(&device_extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
 
-    device_create_info.enabledExtensionCount = num_enabled_device_extensions;
+    for (uint32_t i = 0; i < device_extensions.len; ++i)
+    {
+        bool found = false;
+        for (uint32_t j = 0; j < num_available_device_extensions; ++j)
+        {
+            if (strcmp(
+                    available_device_extensions[j].extensionName,
+                    device_extensions.ptr[i]) == 0)
+            {
+                found = true;
+            }
+        }
+
+        if (!found)
+        {
+            arrFree(&device_extensions);
+            free(available_device_extensions);
+
+            fprintf(
+                stderr,
+                "required device extension not found: %s\n",
+                device_extensions.ptr[i]);
+            return NULL;
+        }
+    }
+
+    device_create_info.enabledExtensionCount = device_extensions.len;
     device_create_info.ppEnabledExtensionNames =
-        (const char *const *)enabled_device_extensions;
+        (const char *const *)device_extensions.ptr;
 
     VK_CHECK(vkCreateDevice(
         device->physical_device, &device_create_info, NULL, &device->device));
 
-    free(enabled_device_extensions);
-    free(device_extensions);
+    arrFree(&device_extensions);
+    free(available_device_extensions);
 
     //
     // Initialize VMA
@@ -930,9 +937,10 @@ void rgDeviceDestroy(RgDevice *device)
     vmaDestroyAllocator(device->allocator);
     vkDestroyDevice(device->device, NULL);
 
-#ifdef RENDERGRAPH_FEATURE_VALIDATION
-    vkDestroyDebugUtilsMessengerEXT(device->instance, device->debug_callback, NULL);
-#endif
+    if (device->info.enable_validation)
+    {
+        vkDestroyDebugUtilsMessengerEXT(device->instance, device->debug_callback, NULL);
+    }
 
     vkDestroyInstance(device->instance, NULL);
 
@@ -943,31 +951,32 @@ void rgDeviceDestroy(RgDevice *device)
 
 void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const char* name)
 {
-#ifdef RENDERGRAPH_FEATURE_VALIDATION
-    VkDebugUtilsObjectNameInfoEXT info;
-    memset(&info, 0, sizeof(info));
-    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-    info.pObjectName = name;
-    
-    switch (type)
+    if (device->info.enable_validation)
     {
-    case RG_OBJECT_TYPE_IMAGE: {
-        info.objectType = VK_OBJECT_TYPE_IMAGE;
-        info.objectHandle = (uint64_t)(((RgImage*)object)->image);
-        break;
-    }
+        VkDebugUtilsObjectNameInfoEXT info;
+        memset(&info, 0, sizeof(info));
+        info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+        info.pObjectName = name;
 
-    case RG_OBJECT_TYPE_BUFFER: {
-        info.objectType = VK_OBJECT_TYPE_BUFFER;
-        info.objectHandle = (uint64_t)(((RgBuffer*)object)->buffer);
-        break;
-    }
+        switch (type)
+        {
+        case RG_OBJECT_TYPE_IMAGE: {
+            info.objectType = VK_OBJECT_TYPE_IMAGE;
+            info.objectHandle = (uint64_t)(((RgImage*)object)->image);
+            break;
+        }
 
-    case RG_OBJECT_TYPE_UNKNOWN: assert(0); break;
-    }
+        case RG_OBJECT_TYPE_BUFFER: {
+            info.objectType = VK_OBJECT_TYPE_BUFFER;
+            info.objectHandle = (uint64_t)(((RgBuffer*)object)->buffer);
+            break;
+        }
 
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device->device, &info));
-#endif
+        case RG_OBJECT_TYPE_UNKNOWN: assert(0); break;
+        }
+
+        VK_CHECK(vkSetDebugUtilsObjectNameEXT(device->device, &info));
+    }
 }
 // }}}
 

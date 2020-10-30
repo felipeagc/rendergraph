@@ -10,7 +10,6 @@ extern "C" {
 #include <stdint.h>
 
 #define RENDERGRAPH_FEATURE_VULKAN
-#define RENDERGRAPH_FEATURE_VALIDATION
 
 typedef struct RgDevice RgDevice;
 typedef struct RgPipeline RgPipeline;
