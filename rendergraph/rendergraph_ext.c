@@ -287,11 +287,11 @@ analyzeSpirv(RgExtShaderStage stage, uint32_t *code, size_t code_size, ModuleInf
     free(ids);
 }
 
-RgPipeline *rgExtPipelineCreateWithShaders(
+RgPipeline *rgExtGraphicsPipelineCreateWithShaders(
     RgDevice *device,
     RgExtCompiledShader *vertex_shader,
     RgExtCompiledShader *fragment_shader,
-    RgPipelineInfo *info)
+    RgGraphicsPipelineInfo *info)
 {
     ModuleInfo vertex_module;
     analyzeSpirv(
@@ -373,5 +373,49 @@ RgPipeline *rgExtPipelineCreateWithShaders(
     info->num_vertex_attributes = vertex_module.attributes_count;
     info->vertex_attributes = vertex_module.attributes;
 
-    return rgPipelineCreate(device, info);
+    return rgGraphicsPipelineCreate(device, info);
+}
+
+RgPipeline *rgExtComputePipelineCreateWithShaders(
+        RgDevice *device,
+        RgExtCompiledShader *shader)
+{
+    ModuleInfo module;
+    memset(&module, 0, sizeof(module));
+
+    analyzeSpirv(
+        RG_EXT_SHADER_STAGE_COMPUTE,
+        (uint32_t *)shader->code,
+        shader->code_size / 4,
+        &module);
+
+    uint32_t bindings_count = 0;
+    RgPipelineBinding bindings[MAX_SETS * MAX_BINDINGS];
+    memset(bindings, 0, sizeof(bindings));
+
+    for (uint32_t s = 0; s < module.sets_count; ++s)
+    {
+        SetInfo *set = &module.sets[s];
+
+        for (uint32_t b = 0; b < set->bindings_count; ++b)
+        {
+            RgPipelineBinding *binding = &bindings[bindings_count];
+            binding->set = s;
+            binding->binding = b;
+            binding->type = set->bindings[b];
+            bindings_count++;
+        }
+    }
+
+    RgComputePipelineInfo info;
+    memset(&info, 0, sizeof(info));
+
+    info.bindings = bindings;
+    info.num_bindings = bindings_count;
+
+    info.code = shader->code;
+    info.code_size = shader->code_size;
+    info.entry = shader->entry_point;
+
+    return rgComputePipelineCreate(device, &info);
 }

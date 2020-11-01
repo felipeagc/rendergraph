@@ -13,11 +13,15 @@ typedef struct RgExtCompiledShader
     const char* entry_point;
 } RgExtCompiledShader;
 
-RgPipeline *rgExtPipelineCreateWithShaders(
+RgPipeline *rgExtGraphicsPipelineCreateWithShaders(
         RgDevice *device,
         RgExtCompiledShader *vertex_shader,
         RgExtCompiledShader *fragment_shader,
-        RgPipelineInfo *info);
+        RgGraphicsPipelineInfo *info);
+
+RgPipeline *rgExtComputePipelineCreateWithShaders(
+        RgDevice *device,
+        RgExtCompiledShader *shader);
 
 #ifdef __cplusplus
 }

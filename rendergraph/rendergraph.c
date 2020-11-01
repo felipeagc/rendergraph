@@ -482,17 +482,54 @@ typedef struct RgDescriptorPool
     uint32_t num_bindings;
 } RgDescriptorPool;
 
+typedef enum RgPipelineType
+{
+    RG_PIPELINE_TYPE_GRAPHICS,
+    RG_PIPELINE_TYPE_COMPUTE,
+} RgPipelineType;
+
 struct RgPipeline
 {
-    RgPipelineInfo info;
-    RgHashmap instances;
+    RgPipelineType type;
+
+    uint32_t num_bindings;
+    RgPipelineBinding *bindings;
 
     RgDescriptorPool pools[RG_MAX_DESCRIPTOR_SETS];
     uint32_t num_sets;
-
     VkPipelineLayout pipeline_layout;
-    VkShaderModule vertex_shader;
-    VkShaderModule fragment_shader;
+
+    union
+    {
+        struct
+        {
+            RgHashmap instances;
+
+            uint32_t vertex_stride;
+            uint32_t num_vertex_attributes;
+            RgVertexAttribute *vertex_attributes;
+
+            RgPolygonMode       polygon_mode;
+            RgCullMode          cull_mode;
+            RgFrontFace         front_face;
+            RgPrimitiveTopology topology;
+
+            RgPipelineBlendState        blend;
+            RgPipelineDepthStencilState depth_stencil;
+
+            char* vertex_entry;
+            char* fragment_entry;
+
+            VkShaderModule vertex_shader;
+            VkShaderModule fragment_shader;
+        } graphics;
+
+        struct
+        {
+            VkPipeline instance;
+            VkShaderModule shader;
+        } compute;
+    };
 };
 // }}}
 
@@ -2501,31 +2538,55 @@ static VkDescriptorSet rgDescriptorPoolAllocate(
 // }}}
 
 // Pipeline {{{
-RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info)
+RgPipeline *rgGraphicsPipelineCreate(RgDevice *device, RgGraphicsPipelineInfo *info)
 {
     RgPipeline *pipeline = (RgPipeline *)malloc(sizeof(RgPipeline));
     memset(pipeline, 0, sizeof(*pipeline));
 
-    pipeline->info = *info;
-    pipeline->info.bindings =
-        malloc(pipeline->info.num_bindings * sizeof(*pipeline->info.bindings));
+    pipeline->type = RG_PIPELINE_TYPE_GRAPHICS;
+
+    pipeline->graphics.polygon_mode = info->polygon_mode;
+    pipeline->graphics.cull_mode = info->cull_mode;
+    pipeline->graphics.front_face = info->front_face;
+    pipeline->graphics.topology = info->topology;
+    pipeline->graphics.blend = info->blend;
+    pipeline->graphics.depth_stencil = info->depth_stencil;
+
+    pipeline->graphics.vertex_stride = info->vertex_stride;
+
+    if (info->vertex_entry)
+    {
+        pipeline->graphics.vertex_entry = strdup(info->vertex_entry);
+    }
+    if (info->fragment_entry)
+    {
+        pipeline->graphics.fragment_entry = strdup(info->fragment_entry);
+    }
+
+    // Bindings
+    pipeline->num_bindings = info->num_bindings;
+    if (pipeline->num_bindings > 0)
+    {
+        pipeline->bindings =
+            malloc(pipeline->num_bindings * sizeof(*pipeline->bindings));
+        memcpy(
+            pipeline->bindings,
+            info->bindings,
+            pipeline->num_bindings * sizeof(*pipeline->bindings));
+    }
+
+    // Vertex attributes
+    pipeline->graphics.num_vertex_attributes = info->num_vertex_attributes;
+    pipeline->graphics.vertex_attributes = malloc(
+        pipeline->graphics.num_vertex_attributes *
+        sizeof(*pipeline->graphics.vertex_attributes));
     memcpy(
-        pipeline->info.bindings,
-        info->bindings,
-        pipeline->info.num_bindings * sizeof(*pipeline->info.bindings));
-    pipeline->info.vertex_attributes = malloc(
-        pipeline->info.num_vertex_attributes * sizeof(*pipeline->info.vertex_attributes));
-    memcpy(
-        pipeline->info.vertex_attributes,
+        pipeline->graphics.vertex_attributes,
         info->vertex_attributes,
-        pipeline->info.num_vertex_attributes * sizeof(*pipeline->info.vertex_attributes));
+        pipeline->graphics.num_vertex_attributes *
+        sizeof(*pipeline->graphics.vertex_attributes));
 
-    pipeline->info.vertex = NULL;
-    pipeline->info.vertex_size = 0;
-    pipeline->info.fragment = NULL;
-    pipeline->info.fragment_size = 0;
-
-    rgHashmapInit(&pipeline->instances, 8);
+    rgHashmapInit(&pipeline->graphics.instances, 8);
 
     //
     // Create descriptor pools
@@ -2536,9 +2597,9 @@ RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info)
     uint32_t binding_counts[RG_MAX_DESCRIPTOR_SETS] = {0};
     uint32_t num_sets = 0;
 
-    for (uint32_t i = 0; i < info->num_bindings; ++i)
+    for (uint32_t i = 0; i < pipeline->num_bindings; ++i)
     {
-        RgPipelineBinding *binding = &info->bindings[i];
+        RgPipelineBinding *binding = &pipeline->bindings[i];
         VkDescriptorSetLayoutBinding *vk_binding =
             &bindings[binding->set][binding->binding];
         memset(vk_binding, 0, sizeof(*vk_binding));
@@ -2586,7 +2647,7 @@ RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info)
         module_create_info.pCode = (uint32_t *)info->vertex;
 
         VK_CHECK(vkCreateShaderModule(
-            device->device, &module_create_info, NULL, &pipeline->vertex_shader));
+            device->device, &module_create_info, NULL, &pipeline->graphics.vertex_shader));
     }
 
     if (info->fragment && info->fragment_size > 0)
@@ -2598,8 +2659,112 @@ RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info)
         module_create_info.pCode = (uint32_t *)info->fragment;
 
         VK_CHECK(vkCreateShaderModule(
-            device->device, &module_create_info, NULL, &pipeline->fragment_shader));
+            device->device, &module_create_info, NULL, &pipeline->graphics.fragment_shader));
     }
+
+    return pipeline;
+}
+
+RgPipeline *rgComputePipelineCreate(RgDevice *device, RgComputePipelineInfo *info)
+{
+    RgPipeline *pipeline = (RgPipeline *)malloc(sizeof(RgPipeline));
+    memset(pipeline, 0, sizeof(*pipeline));
+
+    pipeline->type = RG_PIPELINE_TYPE_COMPUTE;
+    pipeline->num_bindings = info->num_bindings;
+    if (pipeline->num_bindings > 0)
+    {
+        pipeline->bindings =
+            malloc(pipeline->num_bindings * sizeof(*pipeline->bindings));
+        memcpy(
+            pipeline->bindings,
+            info->bindings,
+            pipeline->num_bindings * sizeof(*pipeline->bindings));
+    }
+
+    assert(info->code && info->code_size > 0);
+
+    //
+    // Create descriptor pools
+    //
+
+    VkDescriptorSetLayoutBinding bindings[RG_MAX_DESCRIPTOR_SETS]
+                                         [RG_MAX_DESCRIPTOR_BINDINGS];
+    uint32_t binding_counts[RG_MAX_DESCRIPTOR_SETS] = {0};
+    uint32_t num_sets = 0;
+
+    for (uint32_t i = 0; i < pipeline->num_bindings; ++i)
+    {
+        RgPipelineBinding *binding = &pipeline->bindings[i];
+        VkDescriptorSetLayoutBinding *vk_binding =
+            &bindings[binding->set][binding->binding];
+        memset(vk_binding, 0, sizeof(*vk_binding));
+
+        num_sets = RG_MAX(num_sets, binding->set + 1);
+        binding_counts[binding->set] =
+            RG_MAX(binding_counts[binding->set], binding->binding + 1);
+
+        vk_binding->binding = binding->binding;
+        vk_binding->descriptorType = pipeline_binding_type_to_vk(binding->type);
+        vk_binding->descriptorCount = 1;
+        vk_binding->stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+
+    pipeline->num_sets = num_sets;
+
+    VkDescriptorSetLayout set_layouts[RG_MAX_DESCRIPTOR_SETS];
+    for (uint32_t i = 0; i < pipeline->num_sets; ++i)
+    {
+        rgDescriptorPoolInit(device, &pipeline->pools[i], binding_counts[i], bindings[i]);
+        set_layouts[i] = pipeline->pools[i].set_layout;
+    }
+
+    //
+    // Create pipeline layout
+    //
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info;
+    memset(&pipeline_layout_info, 0, sizeof(pipeline_layout_info));
+    pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_info.setLayoutCount = pipeline->num_sets;
+    pipeline_layout_info.pSetLayouts = set_layouts;
+    pipeline_layout_info.pushConstantRangeCount = 0;
+    pipeline_layout_info.pPushConstantRanges = NULL;
+
+    VK_CHECK(vkCreatePipelineLayout(
+        device->device, &pipeline_layout_info, NULL, &pipeline->pipeline_layout));
+
+    VkShaderModuleCreateInfo module_create_info;
+    memset(&module_create_info, 0, sizeof(module_create_info));
+    module_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    module_create_info.codeSize = info->code_size;
+    module_create_info.pCode = (uint32_t *)info->code;
+
+    VK_CHECK(vkCreateShaderModule(
+        device->device, &module_create_info, NULL, &pipeline->compute.shader));
+
+    VkPipelineShaderStageCreateInfo stage_create_info;
+    memset(&stage_create_info, 0, sizeof(stage_create_info));
+
+    stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage_create_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage_create_info.module = pipeline->compute.shader;
+    stage_create_info.pName = info->entry;
+
+    VkComputePipelineCreateInfo pipeline_create_info;
+    memset(&pipeline_create_info, 0, sizeof(pipeline_create_info));
+
+    pipeline_create_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipeline_create_info.stage = stage_create_info;
+    pipeline_create_info.layout = pipeline->pipeline_layout;
+
+    vkCreateComputePipelines(
+        device->device,
+        VK_NULL_HANDLE,
+        1,
+        &pipeline_create_info,
+        NULL,
+        &pipeline->compute.instance);
 
     return pipeline;
 }
@@ -2608,45 +2773,83 @@ void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline)
 {
     VK_CHECK(vkDeviceWaitIdle(device->device));
 
-    free(pipeline->info.bindings);
-    free(pipeline->info.vertex_attributes);
+    if (pipeline->bindings)
+    {
+        free(pipeline->bindings);
+    }
 
     for (uint32_t i = 0; i < pipeline->num_sets; ++i)
     {
         rgDescriptorPoolDestroy(&pipeline->pools[i]);
     }
 
-    for (uint32_t i = 0; i < pipeline->instances.size; ++i)
-    {
-        if (pipeline->instances.hashes[i] != 0)
-        {
-            VkPipeline instance = VK_NULL_HANDLE;
-            memcpy(&instance, &pipeline->instances.values[i], sizeof(VkPipeline));
-            assert(instance != VK_NULL_HANDLE);
-            vkDestroyPipeline(device->device, instance, NULL);
-        }
-    }
-
-    if (pipeline->vertex_shader)
-    {
-        vkDestroyShaderModule(device->device, pipeline->vertex_shader, NULL);
-    }
-
-    if (pipeline->fragment_shader)
-    {
-        vkDestroyShaderModule(device->device, pipeline->fragment_shader, NULL);
-    }
-
     vkDestroyPipelineLayout(device->device, pipeline->pipeline_layout, NULL);
 
-    rgHashmapDestroy(&pipeline->instances);
+    switch (pipeline->type)
+    {
+    case RG_PIPELINE_TYPE_GRAPHICS:
+    {
+        if (pipeline->graphics.vertex_entry)
+        {
+            free(pipeline->graphics.vertex_entry);
+        }
+        if (pipeline->graphics.fragment_entry)
+        {
+            free(pipeline->graphics.fragment_entry);
+        }
+
+        for (uint32_t i = 0; i < pipeline->graphics.instances.size; ++i)
+        {
+            if (pipeline->graphics.instances.hashes[i] != 0)
+            {
+                VkPipeline instance = VK_NULL_HANDLE;
+                memcpy(
+                    &instance,
+                    &pipeline->graphics.instances.values[i],
+                    sizeof(VkPipeline));
+                assert(instance != VK_NULL_HANDLE);
+                vkDestroyPipeline(device->device, instance, NULL);
+            }
+        }
+
+        free(pipeline->graphics.vertex_attributes);
+
+        if (pipeline->graphics.vertex_shader)
+        {
+            vkDestroyShaderModule(device->device, pipeline->graphics.vertex_shader, NULL);
+        }
+
+        if (pipeline->graphics.fragment_shader)
+        {
+            vkDestroyShaderModule(device->device, pipeline->graphics.fragment_shader, NULL);
+        }
+
+        rgHashmapDestroy(&pipeline->graphics.instances);
+        break;
+    }
+
+    case RG_PIPELINE_TYPE_COMPUTE:
+    {
+        if (pipeline->compute.shader)
+        {
+            vkDestroyShaderModule(device->device, pipeline->compute.shader, NULL);
+        }
+
+        if (pipeline->compute.instance)
+        {
+            vkDestroyPipeline(device->device, pipeline->compute.instance, NULL);
+        }
+        break;
+    }
+    }
+
     free(pipeline);
 }
 
-static VkPipeline
-rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
+static VkPipeline rgGraphicsPipelineGetInstance(
+    RgDevice *device, RgPipeline *pipeline, RgPass *pass)
 {
-    uint64_t *found = rgHashmapGet(&pipeline->instances, pass->hash);
+    uint64_t *found = rgHashmapGet(&pipeline->graphics.instances, pass->hash);
     if (found)
     {
         VkPipeline instance;
@@ -2658,23 +2861,28 @@ rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
     VkPipelineShaderStageCreateInfo stages[RG_MAX_SHADER_STAGES];
     memset(stages, 0, sizeof(stages));
 
-    if (pipeline->vertex_shader)
+    assert(pipeline->type == RG_PIPELINE_TYPE_GRAPHICS);
+
+    if (pipeline->graphics.vertex_shader)
     {
         VkPipelineShaderStageCreateInfo *stage = &stages[num_stages++];
         stage->sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage->stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stage->module = pipeline->vertex_shader;
-        stage->pName = pipeline->info.vertex_entry ? pipeline->info.vertex_entry : "main";
+        stage->module = pipeline->graphics.vertex_shader;
+        stage->pName =
+            pipeline->graphics.vertex_entry ?
+            pipeline->graphics.vertex_entry : "main";
     }
 
-    if (pipeline->fragment_shader)
+    if (pipeline->graphics.fragment_shader)
     {
         VkPipelineShaderStageCreateInfo *stage = &stages[num_stages++];
         stage->sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage->stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stage->module = pipeline->fragment_shader;
+        stage->module = pipeline->graphics.fragment_shader;
         stage->pName =
-            pipeline->info.fragment_entry ? pipeline->info.fragment_entry : "main";
+            pipeline->graphics.fragment_entry ?
+            pipeline->graphics.fragment_entry : "main";
     }
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info;
@@ -2687,34 +2895,34 @@ rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
     VkVertexInputAttributeDescription attributes[RG_MAX_VERTEX_ATTRIBUTES];
     memset(attributes, 0, sizeof(attributes));
 
-    if (pipeline->info.vertex_stride > 0)
+    if (pipeline->graphics.vertex_stride > 0)
     {
-        assert(pipeline->info.num_vertex_attributes > 0);
+        assert(pipeline->graphics.num_vertex_attributes > 0);
 
         vertex_binding.binding = 0;
-        vertex_binding.stride = pipeline->info.vertex_stride;
+        vertex_binding.stride = pipeline->graphics.vertex_stride;
 
         vertex_input_info.vertexBindingDescriptionCount = 1;
         vertex_input_info.pVertexBindingDescriptions = &vertex_binding;
 
-        for (uint32_t i = 0; i < pipeline->info.num_vertex_attributes; ++i)
+        for (uint32_t i = 0; i < pipeline->graphics.num_vertex_attributes; ++i)
         {
             attributes[i].binding = 0;
             attributes[i].location = i;
             attributes[i].format =
-                format_to_vk(pipeline->info.vertex_attributes[i].format);
-            attributes[i].offset = pipeline->info.vertex_attributes[i].offset;
+                format_to_vk(pipeline->graphics.vertex_attributes[i].format);
+            attributes[i].offset = pipeline->graphics.vertex_attributes[i].offset;
         }
 
         vertex_input_info.vertexAttributeDescriptionCount =
-            pipeline->info.num_vertex_attributes;
+            pipeline->graphics.num_vertex_attributes;
         vertex_input_info.pVertexAttributeDescriptions = attributes;
     }
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly;
     memset(&input_assembly, 0, sizeof(input_assembly));
     input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = primitive_topology_to_vk(pipeline->info.topology);
+    input_assembly.topology = primitive_topology_to_vk(pipeline->graphics.topology);
     input_assembly.primitiveRestartEnable = VK_FALSE;
 
     VkViewport viewport;
@@ -2744,11 +2952,11 @@ rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = polygon_mode_to_vk(pipeline->info.polygon_mode);
+    rasterizer.polygonMode = polygon_mode_to_vk(pipeline->graphics.polygon_mode);
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = cull_mode_to_vk(pipeline->info.cull_mode);
-    rasterizer.frontFace = front_face_to_vk(pipeline->info.front_face);
-    rasterizer.depthBiasEnable = pipeline->info.depth_stencil.bias_enable;
+    rasterizer.cullMode = cull_mode_to_vk(pipeline->graphics.cull_mode);
+    rasterizer.frontFace = front_face_to_vk(pipeline->graphics.front_face);
+    rasterizer.depthBiasEnable = pipeline->graphics.depth_stencil.bias_enable;
     rasterizer.depthBiasConstantFactor = 0.0f;
     rasterizer.depthBiasClamp = 0.0f;
     rasterizer.depthBiasSlopeFactor = 0.0f;
@@ -2766,8 +2974,8 @@ rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
     VkPipelineDepthStencilStateCreateInfo depth_stencil;
     memset(&depth_stencil, 0, sizeof(depth_stencil));
     depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth_stencil.depthTestEnable = pipeline->info.depth_stencil.test_enable;
-    depth_stencil.depthWriteEnable = pipeline->info.depth_stencil.write_enable;
+    depth_stencil.depthTestEnable = pipeline->graphics.depth_stencil.test_enable;
+    depth_stencil.depthWriteEnable = pipeline->graphics.depth_stencil.write_enable;
     depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
     VkPipelineColorBlendAttachmentState color_blend_attachment_enabled;
@@ -2803,7 +3011,7 @@ rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
     VkPipelineColorBlendAttachmentState blend_infos[RG_MAX_COLOR_ATTACHMENTS];
     assert(pass->num_color_attachments <= RG_LENGTH(blend_infos));
 
-    if (pipeline->info.blend.enable)
+    if (pipeline->graphics.blend.enable)
     {
         for (uint32_t i = 0; i < RG_LENGTH(blend_infos); ++i)
         {
@@ -2863,7 +3071,7 @@ rgPipelineGetInstance(RgDevice *device, RgPipeline *pipeline, RgPass *pass)
 
     uint64_t instance_id = 0;
     memcpy(&instance_id, &instance, sizeof(VkPipeline));
-    rgHashmapSet(&pipeline->instances, pass->hash, instance_id);
+    rgHashmapSet(&pipeline->graphics.instances, pass->hash, instance_id);
 
     return instance;
 }
@@ -2971,16 +3179,37 @@ void rgCmdSetScissor(RgCmdBuffer *cb, const RgRect2D *rect)
 
 void rgCmdBindPipeline(RgCmdBuffer *cmd_buffer, RgPipeline *pipeline)
 {
-    RgPass *pass = cmd_buffer->current_pass;
-    assert(pass);
-
     cmd_buffer->current_pipeline = pipeline;
 
-    VkPipeline instance = rgPipelineGetInstance(cmd_buffer->device, pipeline, pass);
+    switch (pipeline->type)
+    {
+    case RG_PIPELINE_TYPE_GRAPHICS:
+    {
+        RgPass *pass = cmd_buffer->current_pass;
+        assert(pass);
 
-    assert(instance != VK_NULL_HANDLE);
+        VkPipeline instance = rgGraphicsPipelineGetInstance(
+            cmd_buffer->device, pipeline, pass);
 
-    vkCmdBindPipeline(cmd_buffer->cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, instance);
+        assert(instance != VK_NULL_HANDLE);
+
+        vkCmdBindPipeline(
+            cmd_buffer->cmd_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            instance);
+        break;
+    }
+    case RG_PIPELINE_TYPE_COMPUTE:
+    {
+        assert(pipeline->compute.instance != VK_NULL_HANDLE);
+
+        vkCmdBindPipeline(
+            cmd_buffer->cmd_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline->compute.instance);
+        break;
+    }
+    }
 }
 
 void rgCmdBindImage(
@@ -3112,7 +3341,12 @@ void rgCmdDispatch(
     uint32_t group_count_z)
 {
     cmdBufferBindDescriptors(cmd_buffer);
-    vkCmdDispatch(cmd_buffer->cmd_buffer, group_count_x, group_count_y, group_count_z);
+
+    vkCmdDispatch(
+        cmd_buffer->cmd_buffer,
+        group_count_x,
+        group_count_y,
+        group_count_z);
 }
 
 void rgCmdCopyBufferToBuffer(

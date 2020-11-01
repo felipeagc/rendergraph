@@ -253,7 +253,7 @@ typedef struct RgPipelineDepthStencilState
     bool bias_enable;
 } RgPipelineDepthStencilState;
 
-typedef struct RgPipelineInfo
+typedef struct RgGraphicsPipelineInfo
 {
     RgPolygonMode       polygon_mode;
     RgCullMode          cull_mode;
@@ -277,7 +277,17 @@ typedef struct RgPipelineInfo
     const uint8_t *fragment;
     size_t fragment_size;
     const char* fragment_entry;
-} RgPipelineInfo;
+} RgGraphicsPipelineInfo;
+
+typedef struct RgComputePipelineInfo
+{
+    uint32_t num_bindings;
+    RgPipelineBinding *bindings;
+
+    const uint8_t *code;
+    size_t code_size;
+    const char* entry;
+} RgComputePipelineInfo;
 
 typedef enum RgResourceUsage
 {
@@ -402,7 +412,8 @@ void *rgBufferMap(RgDevice *device, RgBuffer *buffer);
 void rgBufferUnmap(RgDevice *device, RgBuffer *buffer);
 void rgBufferUpload(RgDevice *device, RgBuffer *buffer, size_t offset, size_t size, void *data);
 
-RgPipeline *rgPipelineCreate(RgDevice *device, RgPipelineInfo *info);
+RgPipeline *rgGraphicsPipelineCreate(RgDevice *device, RgGraphicsPipelineInfo *info);
+RgPipeline *rgComputePipelineCreate(RgDevice *device, RgComputePipelineInfo *info);
 void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline);
 
 RgGraph *rgGraphCreate(void);
