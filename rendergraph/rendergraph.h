@@ -89,11 +89,14 @@ typedef enum RgFormat
 
     RG_FORMAT_RGBA16_SFLOAT = 8,
 
-    RG_FORMAT_D32_SFLOAT = 9,
-    RG_FORMAT_D24_UNORM_S8_UINT = 10,
+    RG_FORMAT_D32_SFLOAT_S8_UINT = 9,
+    RG_FORMAT_D32_SFLOAT = 10,
+    RG_FORMAT_D24_UNORM_S8_UINT = 11,
+    RG_FORMAT_D16_UNORM_S8_UINT = 12,
+    RG_FORMAT_D16_UNORM = 13,
 
-    RG_FORMAT_BC7_UNORM = 11,
-    RG_FORMAT_BC7_SRGB = 12,
+    RG_FORMAT_BC7_UNORM = 14,
+    RG_FORMAT_BC7_SRGB = 15,
 } RgFormat;
 
 typedef enum RgImageUsage
@@ -394,6 +397,7 @@ typedef enum RgObjectType
 
 RgDevice *rgDeviceCreate(RgDeviceInfo *info);
 void rgDeviceDestroy(RgDevice* device);
+RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device);
 
 void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const char* name);
 

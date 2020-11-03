@@ -986,6 +986,44 @@ void rgDeviceDestroy(RgDevice *device)
     free(device);
 }
 
+RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device)
+{
+    VkFormat depth_formats[] = {
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_D24_UNORM_S8_UINT,
+        VK_FORMAT_D16_UNORM_S8_UINT,
+        VK_FORMAT_D16_UNORM,
+    };
+
+    for (uint32_t i = 0; i < RG_LENGTH(depth_formats); ++i)
+    {
+        VkFormat format = depth_formats[i];
+
+        VkFormatProperties formatProperties;
+        vkGetPhysicalDeviceFormatProperties(device->physical_device, format, &formatProperties);
+        // Format must support depth stencil attachment for optimal tiling
+        if (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+        {
+            if (!(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
+            {
+                continue;
+            }
+            switch (format)
+            {
+            case VK_FORMAT_D32_SFLOAT_S8_UINT: return RG_FORMAT_D32_SFLOAT_S8_UINT;
+            case VK_FORMAT_D32_SFLOAT: return RG_FORMAT_D32_SFLOAT;
+            case VK_FORMAT_D24_UNORM_S8_UINT: return RG_FORMAT_D24_UNORM_S8_UINT;
+            case VK_FORMAT_D16_UNORM_S8_UINT: return RG_FORMAT_D16_UNORM_S8_UINT;
+            case VK_FORMAT_D16_UNORM: return RG_FORMAT_D16_UNORM;
+            }
+            return format;
+        }
+    }
+    
+    return RG_FORMAT_UNDEFINED;
+}
+
 void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const char* name)
 {
     if (device->info.enable_validation)
@@ -1381,8 +1419,11 @@ static VkFormat format_to_vk(RgFormat fmt)
 
     case RG_FORMAT_RGBA16_SFLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
 
+    case RG_FORMAT_D32_SFLOAT_S8_UINT: return VK_FORMAT_D32_SFLOAT_S8_UINT;
     case RG_FORMAT_D32_SFLOAT: return VK_FORMAT_D32_SFLOAT;
     case RG_FORMAT_D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
+    case RG_FORMAT_D16_UNORM_S8_UINT: return VK_FORMAT_D16_UNORM_S8_UINT;
+    case RG_FORMAT_D16_UNORM: return VK_FORMAT_D16_UNORM;
 
     case RG_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
     case RG_FORMAT_BC7_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
@@ -4547,7 +4588,7 @@ void rgGraphExecute(RgGraph *graph)
             VkResult res = vkAcquireNextImageKHR(
                 graph->device->device,
                 graph->swapchain.swapchain,
-                UINT64_MAX,
+                1000000000ULL,
                 graph->image_available_semaphores[current_frame],
                 VK_NULL_HANDLE,
                 &graph->swapchain.current_image_index);
