@@ -17,6 +17,7 @@ typedef struct RgBuffer RgBuffer;
 typedef struct RgImage RgImage;
 typedef struct RgSampler RgSampler;
 typedef struct RgCmdBuffer RgCmdBuffer;
+typedef struct RgCmdPool RgCmdPool;
 typedef struct RgGraph RgGraph;
 typedef uint32_t RgFlags;
 typedef void(RgPassCallback)(void*, RgCmdBuffer*);
@@ -399,13 +400,16 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info);
 void rgDeviceDestroy(RgDevice* device);
 RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device);
 
+RgCmdPool *rgCmdPoolCreate(RgDevice* device);
+void rgCmdPoolDestroy(RgDevice* device, RgCmdPool *cmd_pool);
+
 void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const char* name);
 
 RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info);
 void rgImageDestroy(RgDevice *device, RgImage *image);
-void rgImageUpload(RgDevice *device, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data);
-void rgImageBarrier(RgDevice *device, RgImage *image, const RgImageRegion *region, RgResourceUsage from, RgResourceUsage to);
-void rgImageGenerateMipMaps(RgDevice *device, RgImage *image);
+void rgImageUpload(RgDevice *device, RgCmdPool *cmd_pool, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data);
+void rgImageBarrier(RgDevice *device, RgCmdPool *cmd_pool, RgImage *image, const RgImageRegion *region, RgResourceUsage from, RgResourceUsage to);
+void rgImageGenerateMipMaps(RgDevice *device, RgCmdPool *cmd_pool, RgImage *image);
 
 RgSampler *rgSamplerCreate(RgDevice *device, RgSamplerInfo *info);
 void rgSamplerDestroy(RgDevice *device, RgSampler *sampler);
@@ -414,7 +418,7 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info);
 void rgBufferDestroy(RgDevice *device, RgBuffer *buffer);
 void *rgBufferMap(RgDevice *device, RgBuffer *buffer);
 void rgBufferUnmap(RgDevice *device, RgBuffer *buffer);
-void rgBufferUpload(RgDevice *device, RgBuffer *buffer, size_t offset, size_t size, void *data);
+void rgBufferUpload(RgDevice *device, RgCmdPool *cmd_pool, RgBuffer *buffer, size_t offset, size_t size, void *data);
 
 RgPipeline *rgGraphicsPipelineCreate(RgDevice *device, RgGraphicsPipelineInfo *info);
 RgPipeline *rgComputePipelineCreate(RgDevice *device, RgComputePipelineInfo *info);
@@ -427,7 +431,7 @@ RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info);
 RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image);
 RgResourceRef rgGraphAddExternalBuffer(RgGraph *graph, RgBuffer *buffer);
 void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resource, RgResourceUsage pre_usage, RgResourceUsage post_usage);
-void rgGraphBuild(RgGraph *graph, RgDevice *device, RgGraphInfo *info);
+void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraphInfo *info);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph, uint32_t width, uint32_t height);
 void rgGraphExecute(RgGraph *graph);

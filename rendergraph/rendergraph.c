@@ -249,8 +249,6 @@ struct RgDevice
         uint32_t graphics;
         uint32_t compute;
     } queue_family_indices;
-
-    VkCommandPool graphics_command_pool;
 };
 
 struct RgImage
@@ -309,9 +307,15 @@ typedef union
 typedef struct RgPass RgPass;
 typedef struct RgNode RgNode;
 
+struct RgCmdPool
+{
+    VkCommandPool command_pool;
+};
+
 struct RgCmdBuffer
 {
     RgDevice *device;
+    RgCmdPool *cmd_pool;
     RgPass *current_pass;
     VkCommandBuffer cmd_buffer;
 
@@ -425,6 +429,7 @@ struct RgPass
 struct RgGraph
 {
     RgDevice *device;
+    RgCmdPool *cmd_pool;
     void *user_data;
 
     bool built;
@@ -955,14 +960,6 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
         0,
         &device->graphics_queue);
 
-    VkCommandPoolCreateInfo cmd_pool_info;
-    memset(&cmd_pool_info, 0, sizeof(cmd_pool_info));
-    cmd_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cmd_pool_info.queueFamilyIndex = device->queue_family_indices.graphics;
-    cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    VK_CHECK(vkCreateCommandPool(
-        device->device, &cmd_pool_info, NULL, &device->graphics_command_pool));
-
     return device;
 }
 
@@ -970,7 +967,6 @@ void rgDeviceDestroy(RgDevice *device)
 {
     VK_CHECK(vkDeviceWaitIdle(device->device));
 
-    vkDestroyCommandPool(device->device, device->graphics_command_pool, NULL);
     vmaDestroyAllocator(device->allocator);
     vkDestroyDevice(device->device, NULL);
 
@@ -1016,8 +1012,8 @@ RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device)
             case VK_FORMAT_D24_UNORM_S8_UINT: return RG_FORMAT_D24_UNORM_S8_UINT;
             case VK_FORMAT_D16_UNORM_S8_UINT: return RG_FORMAT_D16_UNORM_S8_UINT;
             case VK_FORMAT_D16_UNORM: return RG_FORMAT_D16_UNORM;
+            default: assert(0); break;
             }
-            return format;
         }
     }
     
@@ -1052,6 +1048,28 @@ void rgObjectSetName(RgDevice *device, RgObjectType type, void *object, const ch
 
         VK_CHECK(vkSetDebugUtilsObjectNameEXT(device->device, &info));
     }
+}
+
+RgCmdPool *rgCmdPoolCreate(RgDevice* device)
+{
+    RgCmdPool *cmd_pool = (RgCmdPool *)malloc(sizeof(*cmd_pool));
+    memset(cmd_pool, 0, sizeof(*cmd_pool));
+
+    VkCommandPoolCreateInfo cmd_pool_info;
+    memset(&cmd_pool_info, 0, sizeof(cmd_pool_info));
+    cmd_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cmd_pool_info.queueFamilyIndex = device->queue_family_indices.graphics;
+    cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    VK_CHECK(vkCreateCommandPool(
+        device->device, &cmd_pool_info, NULL, &cmd_pool->command_pool));
+
+    return cmd_pool;
+}
+
+void rgCmdPoolDestroy(RgDevice* device, RgCmdPool *cmd_pool)
+{
+    vkDestroyCommandPool(device->device, cmd_pool->command_pool, NULL);
+    free(cmd_pool);
 }
 // }}}
 
@@ -1697,7 +1715,7 @@ void rgBufferUnmap(RgDevice *device, RgBuffer *buffer)
 }
 
 void rgBufferUpload(
-    RgDevice *device, RgBuffer *buffer, size_t offset, size_t size, void *data)
+    RgDevice *device, RgCmdPool *cmd_pool, RgBuffer *buffer, size_t offset, size_t size, void *data)
 {
     VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -1722,7 +1740,7 @@ void rgBufferUpload(
     VkCommandBufferAllocateInfo alloc_info;
     memset(&alloc_info, 0, sizeof(alloc_info));
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = device->graphics_command_pool;
+    alloc_info.commandPool = cmd_pool->command_pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
@@ -1754,7 +1772,7 @@ void rgBufferUpload(
     VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
     vkDestroyFence(device->device, fence, NULL);
 
-    vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer);
+    vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
 
     rgBufferDestroy(device, staging);
 }
@@ -1876,7 +1894,7 @@ void rgImageDestroy(RgDevice *device, RgImage *image)
 }
 
 void rgImageUpload(
-    RgDevice *device, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data)
+    RgDevice *device, RgCmdPool *cmd_pool, RgImageCopy *dst, RgExtent3D *extent, size_t size, void *data)
 {
     VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -1901,7 +1919,7 @@ void rgImageUpload(
     VkCommandBufferAllocateInfo alloc_info;
     memset(&alloc_info, 0, sizeof(alloc_info));
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = device->graphics_command_pool;
+    alloc_info.commandPool = cmd_pool->command_pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
@@ -1996,13 +2014,14 @@ void rgImageUpload(
     VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
     vkDestroyFence(device->device, fence, NULL);
 
-    vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer);
+    vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
 
     rgBufferDestroy(device, staging);
 }
 
 void rgImageBarrier(
     RgDevice *device,
+    RgCmdPool *cmd_pool, 
     RgImage *image,
     const RgImageRegion *region,
     RgResourceUsage from,
@@ -2019,7 +2038,7 @@ void rgImageBarrier(
     VkCommandBufferAllocateInfo alloc_info;
     memset(&alloc_info, 0, sizeof(alloc_info));
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = device->graphics_command_pool;
+    alloc_info.commandPool = cmd_pool->command_pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
@@ -2072,10 +2091,10 @@ void rgImageBarrier(
     VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
     vkDestroyFence(device->device, fence, NULL);
 
-    vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer);
+    vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
 }
 
-void rgImageGenerateMipMaps(RgDevice *device, RgImage *image)
+void rgImageGenerateMipMaps(RgDevice *device, RgCmdPool *cmd_pool, RgImage *image)
 {
     VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -2088,7 +2107,7 @@ void rgImageGenerateMipMaps(RgDevice *device, RgImage *image)
     VkCommandBufferAllocateInfo alloc_info;
     memset(&alloc_info, 0, sizeof(alloc_info));
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = device->graphics_command_pool;
+    alloc_info.commandPool = cmd_pool->command_pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
@@ -2214,7 +2233,7 @@ void rgImageGenerateMipMaps(RgDevice *device, RgImage *image)
     VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
     vkDestroyFence(device->device, fence, NULL);
 
-    vkFreeCommandBuffers(device->device, device->graphics_command_pool, 1, &cmd_buffer);
+    vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
 }
 // }}}
 
@@ -3119,16 +3138,17 @@ static VkPipeline rgGraphicsPipelineGetInstance(
 // }}}
 
 // Command buffer {{{
-static void allocateCmdBuffer(RgDevice *device, RgCmdBuffer *cmd_buffer)
+static void allocateCmdBuffer(RgDevice *device, RgCmdPool *cmd_pool, RgCmdBuffer *cmd_buffer)
 {
     memset(cmd_buffer, 0, sizeof(*cmd_buffer));
 
     cmd_buffer->device = device;
+    cmd_buffer->cmd_pool = cmd_pool;
 
     VkCommandBufferAllocateInfo alloc_info;
     memset(&alloc_info, 0, sizeof(alloc_info));
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = device->graphics_command_pool;
+    alloc_info.commandPool = cmd_pool->command_pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
@@ -3167,7 +3187,7 @@ static void freeCmdBuffer(RgDevice *device, RgCmdBuffer *cmd_buffer)
     rgBufferPoolDestroy(&cmd_buffer->ibo_pool);
 
     vkFreeCommandBuffers(
-        device->device, device->graphics_command_pool, 1, &cmd_buffer->cmd_buffer);
+        device->device, cmd_buffer->cmd_pool->command_pool, 1, &cmd_buffer->cmd_buffer);
 }
 
 static void cmdBufferBindDescriptors(RgCmdBuffer *cmd_buffer)
@@ -3573,7 +3593,7 @@ rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_c
     assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
-        allocateCmdBuffer(graph->device, &node->frames[i].cmd_buffer);
+        allocateCmdBuffer(graph->device, graph->cmd_pool, &node->frames[i].cmd_buffer);
 
         VkSemaphoreCreateInfo semaphore_info;
         memset(&semaphore_info, 0, sizeof(semaphore_info));
@@ -4261,10 +4281,11 @@ void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass_ref, RgResourceRef re
     arrPush(&pass->used_resources, pass_res);
 }
 
-void rgGraphBuild(RgGraph *graph, RgDevice *device, RgGraphInfo *info)
+void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraphInfo *info)
 {
     graph->device = device;
     graph->user_data = info->user_data;
+    graph->cmd_pool = cmd_pool;
 
     graph->num_frames = 1;
     if (info->window)
