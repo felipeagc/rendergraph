@@ -398,6 +398,7 @@ typedef enum RgObjectType
 
 RgDevice *rgDeviceCreate(RgDeviceInfo *info);
 void rgDeviceDestroy(RgDevice* device);
+void rgDeviceWaitIdle(RgDevice* device);
 RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device);
 
 RgCmdPool *rgCmdPoolCreate(RgDevice* device);

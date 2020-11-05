@@ -982,6 +982,11 @@ void rgDeviceDestroy(RgDevice *device)
     free(device);
 }
 
+void rgDeviceWaitIdle(RgDevice* device)
+{
+    VK_CHECK(vkDeviceWaitIdle(device->device));
+}
+
 RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device)
 {
     VkFormat depth_formats[] = {
