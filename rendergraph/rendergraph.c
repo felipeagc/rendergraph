@@ -3208,9 +3208,17 @@ static void cmdBufferBindDescriptors(RgCmdBuffer *cmd_buffer)
         VkDescriptorSet descriptor_set =
             rgDescriptorPoolAllocate(pool, pool->num_bindings, descriptors);
 
+
+        VkPipelineBindPoint bind_point;
+        switch (cmd_buffer->current_pipeline->type)
+        {
+        case RG_PIPELINE_TYPE_GRAPHICS: bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS; break;
+        case RG_PIPELINE_TYPE_COMPUTE: bind_point = VK_PIPELINE_BIND_POINT_COMPUTE; break;
+        }
+
         vkCmdBindDescriptorSets(
             cmd_buffer->cmd_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            bind_point,
             cmd_buffer->current_pipeline->pipeline_layout,
             i,
             1,
@@ -3362,6 +3370,40 @@ void rgCmdBindIndexBuffer(
 {
     vkCmdBindIndexBuffer(
         cmd_buffer->cmd_buffer, buffer->buffer, offset, index_type_to_vk(index_type));
+}
+
+void rgCmdBindUniformBuffer(
+    RgCmdBuffer *cb,
+    uint32_t binding,
+    uint32_t set,
+    RgBuffer *buffer,
+    size_t offset,
+    size_t range)
+{
+    RgDescriptor descriptor;
+    memset(&descriptor, 0, sizeof(descriptor));
+    descriptor.buffer.buffer = buffer->buffer;
+    descriptor.buffer.offset = offset;
+    descriptor.buffer.range = (range != 0) ? range : VK_WHOLE_SIZE;
+
+    cb->bound_descriptors[set][binding] = descriptor;
+}
+
+void rgCmdBindStorageBuffer(
+    RgCmdBuffer *cb,
+    uint32_t binding,
+    uint32_t set,
+    RgBuffer *buffer,
+    size_t offset,
+    size_t range)
+{
+    RgDescriptor descriptor;
+    memset(&descriptor, 0, sizeof(descriptor));
+    descriptor.buffer.buffer = buffer->buffer;
+    descriptor.buffer.offset = offset;
+    descriptor.buffer.range = (range != 0) ? range : VK_WHOLE_SIZE;
+
+    cb->bound_descriptors[set][binding] = descriptor;
 }
 
 void rgCmdDraw(

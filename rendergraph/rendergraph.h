@@ -448,6 +448,20 @@ void rgCmdBindSampler(RgCmdBuffer *cb, uint32_t binding, uint32_t set, RgSampler
 void rgCmdBindImageSampler(RgCmdBuffer *cb, uint32_t binding, uint32_t set, RgImage *image, RgSampler *sampler);
 void rgCmdBindVertexBuffer(RgCmdBuffer *cb, RgBuffer *buffer, size_t offset);
 void rgCmdBindIndexBuffer(RgCmdBuffer *cb, RgIndexType index_type, RgBuffer *buffer, size_t offset);
+void rgCmdBindUniformBuffer(
+    RgCmdBuffer *cb,
+    uint32_t binding,
+    uint32_t set,
+    RgBuffer *buffer,
+    size_t offset,
+    size_t range);
+void rgCmdBindStorageBuffer(
+    RgCmdBuffer *cb,
+    uint32_t binding,
+    uint32_t set,
+    RgBuffer *buffer,
+    size_t offset,
+    size_t range);
 void rgCmdSetUniform(RgCmdBuffer *cb, uint32_t binding, uint32_t set, size_t size, void *data);
 void rgCmdSetVertices(RgCmdBuffer *cb, size_t size, void *data);
 void rgCmdSetIndices(RgCmdBuffer *cb, RgIndexType index_type, size_t size, void *data);

@@ -35,6 +35,7 @@ typedef struct Id
     };
     bool is_builtin;
     bool is_signed;
+    bool is_buffer_block;
 } Id;
 
 typedef struct SetInfo
@@ -82,6 +83,7 @@ analyzeSpirv(RgExtShaderStage stage, uint32_t *code, size_t code_size, ModuleInf
             case SpvDecorationBinding: ids[id].binding = decvalue; break;
             case SpvDecorationBuiltIn: ids[id].is_builtin = true; break;
             case SpvDecorationLocation: ids[id].location = decvalue; break;
+            case SpvDecorationBufferBlock: ids[id].is_buffer_block = true; break;
             }
 
             break;
@@ -170,7 +172,8 @@ analyzeSpirv(RgExtShaderStage stage, uint32_t *code, size_t code_size, ModuleInf
         case SpvOpVariable: {
             assert(ids[id->subtype_id].opcode == SpvOpTypePointer);
 
-            Id *pointed_type = &ids[ids[id->subtype_id].subtype_id];
+            Id *pointer_type = &ids[id->subtype_id];
+            Id *pointed_type = &ids[pointer_type->subtype_id];
 
             switch (id->storage_class)
             {
@@ -190,13 +193,13 @@ analyzeSpirv(RgExtShaderStage stage, uint32_t *code, size_t code_size, ModuleInf
                     set->bindings[id->binding] = RG_BINDING_IMAGE_SAMPLER;
                     break;
                 case SpvOpTypeStruct:
-                    if (id->storage_class == SpvStorageClassUniform)
-                    {
-                        set->bindings[id->binding] = RG_BINDING_UNIFORM_BUFFER;
-                    }
-                    else if (id->storage_class == SpvStorageClassStorageBuffer)
+                    if (pointed_type->is_buffer_block)
                     {
                         set->bindings[id->binding] = RG_BINDING_STORAGE_BUFFER;
+                    }
+                    else if (id->storage_class == SpvStorageClassUniform)
+                    {
+                        set->bindings[id->binding] = RG_BINDING_UNIFORM_BUFFER;
                     }
                     else
                     {
