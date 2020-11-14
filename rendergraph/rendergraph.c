@@ -7,6 +7,7 @@
 
 #ifdef RENDERGRAPH_FEATURE_VULKAN
 
+#define RG_ALLOCATOR
 #define VK_NO_PROTOTYPES
 
 #if defined(__linux__)
@@ -226,6 +227,33 @@ static uint64_t *rgHashmapGet(RgHashmap *hashmap, uint64_t hash)
 // }}}
 
 // Types {{{
+typedef struct RgAllocator
+{
+    RgDevice *device;
+} RgAllocator;
+
+typedef enum RgAllocationType
+{
+    RG_ALLOCATION_TYPE_UNKNOWN,
+    RG_ALLOCATION_TYPE_GPU_ONLY,
+    RG_ALLOCATION_TYPE_CPU_TO_GPU,
+    RG_ALLOCATION_TYPE_GPU_TO_CPU,
+} RgAllocationType;
+
+typedef struct RgAllocationInfo
+{
+    RgAllocationType type;
+    VkMemoryRequirements requirements;
+} RgAllocationInfo;
+
+typedef struct RgAllocation
+{
+    VkDeviceMemory handle;
+    size_t size;
+    size_t offset;
+    void *mapping;
+} RgAllocation;
+
 struct RgDevice
 {
     RgDeviceInfo info;
@@ -235,12 +263,16 @@ struct RgDevice
 
     VkPhysicalDeviceProperties physical_device_properties;
     VkPhysicalDeviceFeatures physical_device_features;
+    VkPhysicalDeviceMemoryProperties physical_device_memory_properties;
+
     VkQueueFamilyProperties *queue_family_properties;
     uint32_t num_queue_family_properties;
 
     VkPhysicalDevice physical_device;
     VkDevice device;
-    VmaAllocator allocator;
+    VmaAllocator vma_allocator;
+
+    RgAllocator *allocator;
 
     VkQueue graphics_queue;
 
@@ -255,16 +287,24 @@ struct RgImage
 {
     RgImageInfo info;
     VkImage image;
-    VmaAllocation allocation;
     VkImageView view;
     VkImageAspectFlags aspect;
+#ifdef RG_ALLOCATOR
+    RgAllocation allocation;
+#else
+    VmaAllocation allocation;
+#endif
 };
 
 struct RgBuffer
 {
     RgBufferInfo info;
     VkBuffer buffer;
+#ifdef RG_ALLOCATOR
+    RgAllocation allocation;
+#else
     VmaAllocation allocation;
+#endif
 };
 
 typedef struct RgBufferPool RgBufferPool;
@@ -779,19 +819,9 @@ static void rgResourceUsageToVk(
 // }}}
 
 // Device memory allocator {{{
-#if 0
-struct rg_allocation_t
-{
-    VkDeviceMemory handle;
-    uint32_t type;
-    uint32_t id;
-    size_t size;
-    size_t offset;
-};
-
 static int32_t
-rg_find_memory_properties(
-        VkPhysicalDeviceMemoryProperties* memory_properties,
+rgFindMemoryProperties(
+        const VkPhysicalDeviceMemoryProperties* memory_properties,
         uint32_t memory_type_bits_requirement,
         VkMemoryPropertyFlags required_properties)
 {
@@ -814,7 +844,160 @@ rg_find_memory_properties(
     // failed to find memory type
     return -1;
 }
-#endif
+
+static RgAllocator *rgAllocatorCreate(RgDevice *device)
+{
+    RgAllocator *allocator = malloc(sizeof(*allocator));
+    memset(allocator, 0, sizeof(*allocator));
+
+    allocator->device = device;
+
+    return allocator;
+}
+
+static void rgAllocatorDestroy(RgAllocator *allocator)
+{
+    free(allocator);
+}
+
+static VkResult rgAllocatorAllocate(
+    RgAllocator *allocator,
+    RgAllocationInfo *info,
+    RgAllocation *allocation)
+{
+    memset(allocation, 0, sizeof(*allocation));
+
+    VkMemoryPropertyFlagBits preferred_properties = 0;
+    switch (info->type)
+    {
+    case RG_ALLOCATION_TYPE_GPU_ONLY:
+        preferred_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        break;
+    case RG_ALLOCATION_TYPE_CPU_TO_GPU:
+        preferred_properties =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        break;
+    case RG_ALLOCATION_TYPE_GPU_TO_CPU:
+        preferred_properties =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        break;
+    case RG_ALLOCATION_TYPE_UNKNOWN: break;
+    }
+
+    int32_t memory_type_index = rgFindMemoryProperties(
+        &allocator->device->physical_device_memory_properties,
+        info->requirements.memoryTypeBits,
+        preferred_properties);
+
+    if (memory_type_index == -1)
+    {
+        // We try again!
+
+        switch (info->type)
+        {
+        case RG_ALLOCATION_TYPE_GPU_ONLY:
+            preferred_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            break;
+        case RG_ALLOCATION_TYPE_CPU_TO_GPU:
+            preferred_properties =
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+        case RG_ALLOCATION_TYPE_GPU_TO_CPU:
+            preferred_properties =
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+        case RG_ALLOCATION_TYPE_UNKNOWN: break;
+        }
+    }
+    
+    if (memory_type_index == -1)
+    {
+        // Now we actually failed.
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+
+    assert(memory_type_index >= 0);
+
+    VkResult result = VK_SUCCESS;
+
+    VkMemoryAllocateInfo vk_allocate_info;
+    memset(&vk_allocate_info, 0, sizeof(vk_allocate_info));
+    vk_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    vk_allocate_info.allocationSize = info->requirements.size;
+    vk_allocate_info.memoryTypeIndex = (uint32_t)memory_type_index;
+
+
+    VkDeviceMemory vk_memory = VK_NULL_HANDLE;
+    result = vkAllocateMemory(
+        allocator->device->device,
+        &vk_allocate_info,
+        NULL,
+        &vk_memory);
+
+    if (result != VK_SUCCESS)
+    {
+        return result;
+    }
+
+    allocation->handle = vk_memory;
+    allocation->size = info->requirements.size;
+    allocation->offset = 0;
+
+    if (preferred_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    {
+        result = vkMapMemory(
+            allocator->device->device,
+            allocation->handle,
+            0,
+            VK_WHOLE_SIZE,
+            0,
+            &allocation->mapping);
+
+        if (result != VK_SUCCESS)
+        {
+            vkFreeMemory(allocator->device->device, allocation->handle, NULL);
+            return result;
+        }
+    }
+
+    return VK_SUCCESS;
+}
+
+static void rgAllocatorFree(RgAllocator *allocator, const RgAllocation *allocation)
+{
+    if (allocation->mapping)
+    {
+        vkUnmapMemory(
+            allocator->device->device,
+            allocation->handle);
+    }
+    vkFreeMemory(allocator->device->device, allocation->handle, NULL);
+}
+
+static VkResult rgMapAllocation(RgAllocator *allocator, const RgAllocation *allocation, void **ppData)
+{
+    (void)allocator;
+
+    if (allocation->mapping)
+    {
+        *ppData = allocation->mapping + allocation->offset;
+        return VK_SUCCESS;
+    }
+    return VK_ERROR_MEMORY_MAP_FAILED;
+}
+
+static void rgUnmapAllocation(RgAllocator *allocator, const RgAllocation *allocation)
+{
+    // No-op for now
+    (void)allocator;
+    (void)allocation;
+}
 // }}}
 
 // Device {{{
@@ -1164,6 +1347,17 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
     arrFree(&device_extensions);
     free(available_device_extensions);
 
+    // Fetch device memory properties
+    vkGetPhysicalDeviceMemoryProperties(
+        device->physical_device,
+        &device->physical_device_memory_properties);
+
+    vkGetDeviceQueue(
+        device->device,
+        device->queue_family_indices.graphics,
+        0,
+        &device->graphics_queue);
+
     //
     // Initialize VMA
     //
@@ -1192,13 +1386,10 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
     allocator_info.instance = device->instance;
     allocator_info.pVulkanFunctions = &vk_funcs;
 
-    VK_CHECK(vmaCreateAllocator(&allocator_info, &device->allocator));
+    VK_CHECK(vmaCreateAllocator(&allocator_info, &device->vma_allocator));
 
-    vkGetDeviceQueue(
-        device->device,
-        device->queue_family_indices.graphics,
-        0,
-        &device->graphics_queue);
+    // Initialize allocator
+    device->allocator = rgAllocatorCreate(device);
 
     return device;
 }
@@ -1207,7 +1398,8 @@ void rgDeviceDestroy(RgDevice *device)
 {
     VK_CHECK(vkDeviceWaitIdle(device->device));
 
-    vmaDestroyAllocator(device->allocator);
+    rgAllocatorDestroy(device->allocator);
+    vmaDestroyAllocator(device->vma_allocator);
     vkDestroyDevice(device->device, NULL);
 
     if (device->info.enable_validation)
@@ -1709,6 +1901,34 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
     if (buffer->info.usage & RG_BUFFER_USAGE_STORAGE)
         ci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
+#ifdef RG_ALLOCATOR
+    VK_CHECK(vkCreateBuffer(
+        device->device,
+        &ci,
+        NULL,
+        &buffer->buffer));
+
+    RgAllocationInfo alloc_info = {0};
+    vkGetBufferMemoryRequirements(device->device, buffer->buffer, &alloc_info.requirements);
+
+    switch (buffer->info.memory)
+    {
+    case RG_BUFFER_MEMORY_HOST:
+        alloc_info.type = RG_ALLOCATION_TYPE_CPU_TO_GPU;
+        break;
+    case RG_BUFFER_MEMORY_DEVICE:
+        alloc_info.type = RG_ALLOCATION_TYPE_GPU_ONLY;
+        break;
+    }
+
+    VK_CHECK(rgAllocatorAllocate(device->allocator, &alloc_info, &buffer->allocation));
+
+    VK_CHECK(vkBindBufferMemory(
+        device->device,
+        buffer->buffer,
+        buffer->allocation.handle,
+        buffer->allocation.offset));
+#else
     VmaAllocationCreateInfo alloc_info = {0};
     alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
     alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -1726,7 +1946,8 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
     }
 
     VK_CHECK(vmaCreateBuffer(
-        device->allocator, &ci, &alloc_info, &buffer->buffer, &buffer->allocation, NULL));
+        device->vma_allocator, &ci, &alloc_info, &buffer->buffer, &buffer->allocation, NULL));
+#endif
 
     return buffer;
 }
@@ -1736,10 +1957,13 @@ void rgBufferDestroy(RgDevice *device, RgBuffer *buffer)
     VK_CHECK(vkDeviceWaitIdle(device->device));
     if (buffer->buffer)
     {
-        vmaDestroyBuffer(device->allocator, buffer->buffer, buffer->allocation);
+#ifdef RG_ALLOCATOR
+        rgAllocatorFree(device->allocator, &buffer->allocation);
+        vkDestroyBuffer(device->device, buffer->buffer, NULL);
+#else
+        vmaDestroyBuffer(device->vma_allocator, buffer->buffer, buffer->allocation);
+#endif
     }
-    buffer->buffer = VK_NULL_HANDLE;
-    buffer->allocation = VK_NULL_HANDLE;
 
     free(buffer);
 }
@@ -1747,13 +1971,21 @@ void rgBufferDestroy(RgDevice *device, RgBuffer *buffer)
 void *rgBufferMap(RgDevice *device, RgBuffer *buffer)
 {
     void *ptr;
-    VK_CHECK(vmaMapMemory(device->allocator, buffer->allocation, &ptr));
+#ifdef RG_ALLOCATOR
+    VK_CHECK(rgMapAllocation(device->allocator, &buffer->allocation, &ptr));
+#else
+    VK_CHECK(vmaMapMemory(device->vma_allocator, buffer->allocation, &ptr));
+#endif
     return ptr;
 }
 
 void rgBufferUnmap(RgDevice *device, RgBuffer *buffer)
 {
-    vmaUnmapMemory(device->allocator, buffer->allocation);
+#ifdef RG_ALLOCATOR
+    rgUnmapAllocation(device->allocator, &buffer->allocation);
+#else
+    vmaUnmapMemory(device->vma_allocator, buffer->allocation);
+#endif
 }
 
 void rgBufferUpload(
@@ -1872,17 +2104,33 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
         if (image->info.usage & RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)
             ci.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
+#ifdef RG_ALLOCATOR
+        VK_CHECK(vkCreateImage(device->device, &ci, NULL, &image->image));
+
+        RgAllocationInfo alloc_info = {0};
+        alloc_info.type = RG_ALLOCATION_TYPE_GPU_ONLY;
+        vkGetImageMemoryRequirements(device->device, image->image, &alloc_info.requirements);
+
+        VK_CHECK(rgAllocatorAllocate(device->allocator, &alloc_info, &image->allocation));
+
+        VK_CHECK(vkBindImageMemory(
+                     device->device,
+                     image->image,
+                     image->allocation.handle,
+                     image->allocation.offset));
+#else
         VmaAllocationCreateInfo alloc_create_info;
         memset(&alloc_create_info, 0, sizeof(alloc_create_info));
         alloc_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
         VK_CHECK(vmaCreateImage(
-            device->allocator,
+            device->vma_allocator,
             &ci,
             &alloc_create_info,
             &image->image,
             &image->allocation,
             NULL));
+#endif
     }
 
     {
@@ -1907,7 +2155,17 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
         if (image->info.aspect & RG_IMAGE_ASPECT_DEPTH)
             image->aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
         if (image->info.aspect & RG_IMAGE_ASPECT_STENCIL)
-            image->aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        {
+            switch (image->info.format)
+            {
+            case RG_FORMAT_D16_UNORM_S8_UINT:
+            case RG_FORMAT_D24_UNORM_S8_UINT:
+            case RG_FORMAT_D32_SFLOAT_S8_UINT:
+                image->aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+                break;
+            default: break;
+            }
+        }
 
         ci.subresourceRange.aspectMask = image->aspect;
 
@@ -1926,11 +2184,13 @@ void rgImageDestroy(RgDevice *device, RgImage *image)
     }
     if (image->image)
     {
-        vmaDestroyImage(device->allocator, image->image, image->allocation);
+#ifdef RG_ALLOCATOR
+        vkDestroyImage(device->device, image->image, NULL);
+        rgAllocatorFree(device->allocator, &image->allocation);
+#else
+        vmaDestroyImage(device->vma_allocator, image->image, image->allocation);
+#endif
     }
-    image->view = VK_NULL_HANDLE;
-    image->image = VK_NULL_HANDLE;
-    image->allocation = VK_NULL_HANDLE;
 
     free(image);
 }
