@@ -332,6 +332,7 @@ typedef struct RgSwapchain
 {
     RgDevice *device;
 
+    RgFormat preferred_format;
     RgPlatformWindowInfo window;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
@@ -536,6 +537,245 @@ struct RgPipeline
         } compute;
     };
 };
+// }}}
+
+// Type conversions {{{
+static VkFormat format_to_vk(RgFormat fmt)
+{
+    switch (fmt)
+    {
+    case RG_FORMAT_UNDEFINED: return VK_FORMAT_UNDEFINED;
+
+    case RG_FORMAT_R8_UNORM: return VK_FORMAT_R8_UNORM;
+    case RG_FORMAT_RG8_UNORM: return VK_FORMAT_R8G8_UNORM;
+    case RG_FORMAT_RGB8_UNORM: return VK_FORMAT_R8G8B8_UNORM;
+    case RG_FORMAT_RGBA8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
+
+    case RG_FORMAT_R8_UINT: return VK_FORMAT_R8_UINT;
+    case RG_FORMAT_RG8_UINT: return VK_FORMAT_R8G8_UINT;
+    case RG_FORMAT_RGB8_UINT: return VK_FORMAT_R8G8B8_UINT;
+    case RG_FORMAT_RGBA8_UINT: return VK_FORMAT_R8G8B8A8_UINT;
+
+    case RG_FORMAT_R16_UINT: return VK_FORMAT_R16_UINT;
+    case RG_FORMAT_RG16_UINT: return VK_FORMAT_R16G16_UINT;
+    case RG_FORMAT_RGB16_UINT: return VK_FORMAT_R16G16B16_UINT;
+    case RG_FORMAT_RGBA16_UINT: return VK_FORMAT_R16G16B16A16_UINT;
+
+    case RG_FORMAT_R32_UINT: return VK_FORMAT_R32_UINT;
+    case RG_FORMAT_RG32_UINT: return VK_FORMAT_R32G32_UINT;
+    case RG_FORMAT_RGB32_UINT: return VK_FORMAT_R32G32B32_UINT;
+    case RG_FORMAT_RGBA32_UINT: return VK_FORMAT_R32G32B32A32_UINT;
+
+    case RG_FORMAT_R32_SFLOAT: return VK_FORMAT_R32_SFLOAT;
+    case RG_FORMAT_RG32_SFLOAT: return VK_FORMAT_R32G32_SFLOAT;
+    case RG_FORMAT_RGB32_SFLOAT: return VK_FORMAT_R32G32B32_SFLOAT;
+    case RG_FORMAT_RGBA32_SFLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
+
+    case RG_FORMAT_R16_SFLOAT: return VK_FORMAT_R16_SFLOAT;
+    case RG_FORMAT_RG16_SFLOAT: return VK_FORMAT_R16G16_SFLOAT;
+    case RG_FORMAT_RGBA16_SFLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
+
+    case RG_FORMAT_BGRA8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
+    case RG_FORMAT_BGRA8_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
+
+    case RG_FORMAT_D32_SFLOAT_S8_UINT: return VK_FORMAT_D32_SFLOAT_S8_UINT;
+    case RG_FORMAT_D32_SFLOAT: return VK_FORMAT_D32_SFLOAT;
+    case RG_FORMAT_D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
+    case RG_FORMAT_D16_UNORM_S8_UINT: return VK_FORMAT_D16_UNORM_S8_UINT;
+    case RG_FORMAT_D16_UNORM: return VK_FORMAT_D16_UNORM;
+
+    case RG_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
+    case RG_FORMAT_BC7_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkFilter filter_to_vk(RgFilter value)
+{
+    switch (value)
+    {
+    case RG_FILTER_LINEAR: return VK_FILTER_LINEAR;
+    case RG_FILTER_NEAREST: return VK_FILTER_NEAREST;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkSamplerAddressMode address_mode_to_vk(RgSamplerAddressMode value)
+{
+    switch (value)
+    {
+    case RG_SAMPLER_ADDRESS_MODE_REPEAT: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    case RG_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:
+        return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    case RG_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE:
+        return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkBorderColor border_color_to_vk(RgBorderColor value)
+{
+    switch (value)
+    {
+    case RG_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
+        return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    case RG_BORDER_COLOR_INT_TRANSPARENT_BLACK:
+        return VK_BORDER_COLOR_INT_TRANSPARENT_BLACK;
+    case RG_BORDER_COLOR_FLOAT_OPAQUE_BLACK: return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    case RG_BORDER_COLOR_INT_OPAQUE_BLACK: return VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    case RG_BORDER_COLOR_FLOAT_OPAQUE_WHITE: return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    case RG_BORDER_COLOR_INT_OPAQUE_WHITE: return VK_BORDER_COLOR_INT_OPAQUE_WHITE;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkIndexType index_type_to_vk(RgIndexType index_type)
+{
+    switch (index_type)
+    {
+    case RG_INDEX_TYPE_UINT16: return VK_INDEX_TYPE_UINT16;
+    case RG_INDEX_TYPE_UINT32: return VK_INDEX_TYPE_UINT32;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkCullModeFlagBits cull_mode_to_vk(RgCullMode cull_mode)
+{
+    switch (cull_mode)
+    {
+    case RG_CULL_MODE_NONE: return VK_CULL_MODE_NONE;
+    case RG_CULL_MODE_BACK: return VK_CULL_MODE_BACK_BIT;
+    case RG_CULL_MODE_FRONT: return VK_CULL_MODE_FRONT_BIT;
+    case RG_CULL_MODE_FRONT_AND_BACK: return VK_CULL_MODE_FRONT_AND_BACK;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkFrontFace front_face_to_vk(RgFrontFace front_face)
+{
+    switch (front_face)
+    {
+    case RG_FRONT_FACE_CLOCKWISE: return VK_FRONT_FACE_CLOCKWISE;
+    case RG_FRONT_FACE_COUNTER_CLOCKWISE: return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkPolygonMode polygon_mode_to_vk(RgPolygonMode polygon_mode)
+{
+    switch (polygon_mode)
+    {
+    case RG_POLYGON_MODE_FILL: return VK_POLYGON_MODE_FILL;
+    case RG_POLYGON_MODE_LINE: return VK_POLYGON_MODE_LINE;
+    case RG_POLYGON_MODE_POINT: return VK_POLYGON_MODE_POINT;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkPrimitiveTopology primitive_topology_to_vk(RgPrimitiveTopology value)
+{
+    switch (value)
+    {
+    case RG_PRIMITIVE_TOPOLOGY_LINE_LIST: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    case RG_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    }
+    assert(0);
+    return 0;
+}
+
+static VkDescriptorType pipeline_binding_type_to_vk(RgPipelineBindingType type)
+{
+    switch (type)
+    {
+    case RG_BINDING_UNIFORM_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case RG_BINDING_STORAGE_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    case RG_BINDING_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    case RG_BINDING_SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
+    case RG_BINDING_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    }
+    assert(0);
+    return 0;
+}
+// }}}
+
+// Barrier utils {{{
+static void rgResourceUsageToVk(
+    RgResourceUsage usage,
+    VkAccessFlags *access_flags,
+    /* optional */ VkImageLayout *image_layout)
+{
+    switch (usage)
+    {
+    case RG_RESOURCE_USAGE_UNDEFINED:
+    {
+        if (access_flags)
+            *access_flags = 0;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        break;
+    }
+    case RG_RESOURCE_USAGE_SAMPLED:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_SHADER_READ_BIT;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_SRC:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_TRANSFER_READ_BIT;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_TRANSFER_DST:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+
+        // We use VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL because
+        // this is the renderpass attachment's finalLayout
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        break;
+    }
+    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
+    {
+        if (access_flags)
+            *access_flags = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+        // We use VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL because
+        // this is the renderpass attachment's finalLayout
+        if (image_layout)
+            *image_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        break;
+    }
+    }
+}
 // }}}
 
 // Device memory allocator {{{
@@ -987,9 +1227,22 @@ void rgDeviceWaitIdle(RgDevice* device)
     VK_CHECK(vkDeviceWaitIdle(device->device));
 }
 
-RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device)
+RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device, RgFormat wanted_format)
 {
-    VkFormat depth_formats[] = {
+    VkFormatProperties formatProperties;
+    vkGetPhysicalDeviceFormatProperties(
+        device->physical_device,
+        format_to_vk(wanted_format),
+        &formatProperties);
+
+    if (formatProperties.optimalTilingFeatures &
+        (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
+    {
+        return wanted_format;
+    }
+
+    VkFormat depth_formats[5] = {
         VK_FORMAT_D32_SFLOAT_S8_UINT,
         VK_FORMAT_D32_SFLOAT,
         VK_FORMAT_D24_UNORM_S8_UINT,
@@ -1001,15 +1254,15 @@ RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device)
     {
         VkFormat format = depth_formats[i];
 
-        VkFormatProperties formatProperties;
-        vkGetPhysicalDeviceFormatProperties(device->physical_device, format, &formatProperties);
-        // Format must support depth stencil attachment for optimal tiling
-        if (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+        vkGetPhysicalDeviceFormatProperties(
+            device->physical_device,
+            format,
+            &formatProperties);
+
+        if (formatProperties.optimalTilingFeatures &
+            (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+             VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
         {
-            if (!(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
-            {
-                continue;
-            }
             switch (format)
             {
             case VK_FORMAT_D32_SFLOAT_S8_UINT: return RG_FORMAT_D32_SFLOAT_S8_UINT;
@@ -1080,15 +1333,18 @@ void rgCmdPoolDestroy(RgDevice* device, RgCmdPool *cmd_pool)
 
 // Swapchain setup {{{
 static void
-rgSwapchainInit(RgDevice *device, RgSwapchain *swapchain, RgPlatformWindowInfo *window)
+rgSwapchainInit(
+    RgDevice *device,
+    RgSwapchain *swapchain,
+    RgPlatformWindowInfo *window,
+    RgFormat preferred_format)
 {
     memset(swapchain, 0, sizeof(*swapchain));
 
-    if (window)
-    {
-        swapchain->window = *window;
-    }
+    swapchain->window = *window;
     swapchain->device = device;
+    swapchain->preferred_format = preferred_format;
+    assert(swapchain->preferred_format != RG_FORMAT_UNDEFINED);
 
     switch (device->info.window_system)
     {
@@ -1263,7 +1519,7 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
         for (uint32_t i = 0; i < num_formats; ++i)
         {
             VkSurfaceFormatKHR *format = &formats[i];
-            if (format->format == VK_FORMAT_B8G8R8A8_SRGB)
+            if (format->format == format_to_vk(swapchain->preferred_format))
             {
                 surface_format = *format;
                 break;
@@ -1419,225 +1675,6 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
             &view_create_info,
             NULL,
             &swapchain->image_views[i]));
-    }
-}
-// }}}
-
-// Type conversions {{{
-static VkFormat format_to_vk(RgFormat fmt)
-{
-    switch (fmt)
-    {
-    case RG_FORMAT_UNDEFINED: return VK_FORMAT_UNDEFINED;
-
-    case RG_FORMAT_RGB8_UNORM: return VK_FORMAT_R8G8B8_UNORM;
-    case RG_FORMAT_RGBA8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
-
-    case RG_FORMAT_R32_UINT: return VK_FORMAT_R32_UINT;
-
-    case RG_FORMAT_R32_SFLOAT: return VK_FORMAT_R32_SFLOAT;
-    case RG_FORMAT_RG32_SFLOAT: return VK_FORMAT_R32G32_SFLOAT;
-    case RG_FORMAT_RGB32_SFLOAT: return VK_FORMAT_R32G32B32_SFLOAT;
-    case RG_FORMAT_RGBA32_SFLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
-
-    case RG_FORMAT_RGBA16_SFLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
-
-    case RG_FORMAT_D32_SFLOAT_S8_UINT: return VK_FORMAT_D32_SFLOAT_S8_UINT;
-    case RG_FORMAT_D32_SFLOAT: return VK_FORMAT_D32_SFLOAT;
-    case RG_FORMAT_D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
-    case RG_FORMAT_D16_UNORM_S8_UINT: return VK_FORMAT_D16_UNORM_S8_UINT;
-    case RG_FORMAT_D16_UNORM: return VK_FORMAT_D16_UNORM;
-
-    case RG_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
-    case RG_FORMAT_BC7_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkFilter filter_to_vk(RgFilter value)
-{
-    switch (value)
-    {
-    case RG_FILTER_LINEAR: return VK_FILTER_LINEAR;
-    case RG_FILTER_NEAREST: return VK_FILTER_NEAREST;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkSamplerAddressMode address_mode_to_vk(RgSamplerAddressMode value)
-{
-    switch (value)
-    {
-    case RG_SAMPLER_ADDRESS_MODE_REPEAT: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    case RG_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:
-        return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:
-        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    case RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:
-        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    case RG_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE:
-        return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkBorderColor border_color_to_vk(RgBorderColor value)
-{
-    switch (value)
-    {
-    case RG_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
-        return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-    case RG_BORDER_COLOR_INT_TRANSPARENT_BLACK:
-        return VK_BORDER_COLOR_INT_TRANSPARENT_BLACK;
-    case RG_BORDER_COLOR_FLOAT_OPAQUE_BLACK: return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-    case RG_BORDER_COLOR_INT_OPAQUE_BLACK: return VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    case RG_BORDER_COLOR_FLOAT_OPAQUE_WHITE: return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-    case RG_BORDER_COLOR_INT_OPAQUE_WHITE: return VK_BORDER_COLOR_INT_OPAQUE_WHITE;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkIndexType index_type_to_vk(RgIndexType index_type)
-{
-    switch (index_type)
-    {
-    case RG_INDEX_TYPE_UINT16: return VK_INDEX_TYPE_UINT16;
-    case RG_INDEX_TYPE_UINT32: return VK_INDEX_TYPE_UINT32;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkCullModeFlagBits cull_mode_to_vk(RgCullMode cull_mode)
-{
-    switch (cull_mode)
-    {
-    case RG_CULL_MODE_NONE: return VK_CULL_MODE_NONE;
-    case RG_CULL_MODE_BACK: return VK_CULL_MODE_BACK_BIT;
-    case RG_CULL_MODE_FRONT: return VK_CULL_MODE_FRONT_BIT;
-    case RG_CULL_MODE_FRONT_AND_BACK: return VK_CULL_MODE_FRONT_AND_BACK;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkFrontFace front_face_to_vk(RgFrontFace front_face)
-{
-    switch (front_face)
-    {
-    case RG_FRONT_FACE_CLOCKWISE: return VK_FRONT_FACE_CLOCKWISE;
-    case RG_FRONT_FACE_COUNTER_CLOCKWISE: return VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkPolygonMode polygon_mode_to_vk(RgPolygonMode polygon_mode)
-{
-    switch (polygon_mode)
-    {
-    case RG_POLYGON_MODE_FILL: return VK_POLYGON_MODE_FILL;
-    case RG_POLYGON_MODE_LINE: return VK_POLYGON_MODE_LINE;
-    case RG_POLYGON_MODE_POINT: return VK_POLYGON_MODE_POINT;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkPrimitiveTopology primitive_topology_to_vk(RgPrimitiveTopology value)
-{
-    switch (value)
-    {
-    case RG_PRIMITIVE_TOPOLOGY_LINE_LIST: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-    case RG_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    }
-    assert(0);
-    return 0;
-}
-
-static VkDescriptorType pipeline_binding_type_to_vk(RgPipelineBindingType type)
-{
-    switch (type)
-    {
-    case RG_BINDING_UNIFORM_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    case RG_BINDING_STORAGE_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    case RG_BINDING_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    case RG_BINDING_SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
-    case RG_BINDING_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    }
-    assert(0);
-    return 0;
-}
-// }}}
-
-// Barrier utils {{{
-static void rgResourceUsageToVk(
-    RgResourceUsage usage,
-    VkAccessFlags *access_flags,
-    /* optional */ VkImageLayout *image_layout)
-{
-    switch (usage)
-    {
-    case RG_RESOURCE_USAGE_UNDEFINED:
-    {
-        if (access_flags)
-            *access_flags = 0;
-        if (image_layout)
-            *image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        break;
-    }
-    case RG_RESOURCE_USAGE_SAMPLED:
-    {
-        if (access_flags)
-            *access_flags = VK_ACCESS_SHADER_READ_BIT;
-        if (image_layout)
-            *image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_TRANSFER_SRC:
-    {
-        if (access_flags)
-            *access_flags = VK_ACCESS_TRANSFER_READ_BIT;
-        if (image_layout)
-            *image_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_TRANSFER_DST:
-    {
-        if (access_flags)
-            *access_flags = VK_ACCESS_TRANSFER_WRITE_BIT;
-        if (image_layout)
-            *image_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_COLOR_ATTACHMENT:
-    {
-        if (access_flags)
-            *access_flags = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-                | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-
-        // We use VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL because
-        // this is the renderpass attachment's finalLayout
-        if (image_layout)
-            *image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        break;
-    }
-    case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
-    {
-        if (access_flags)
-            *access_flags = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-        // We use VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL because
-        // this is the renderpass attachment's finalLayout
-        if (image_layout)
-            *image_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        break;
-    }
     }
 }
 // }}}
@@ -4339,7 +4376,7 @@ void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraph
     {
         assert(info->width > 0 && info->height > 0);
         graph->has_swapchain = true;
-        rgSwapchainInit(graph->device, &graph->swapchain, info->window);
+        rgSwapchainInit(graph->device, &graph->swapchain, info->window, info->preferred_swapchain_format);
         graph->num_frames = RG_FRAMES_IN_FLIGHT;
     }
 

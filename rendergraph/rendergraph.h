@@ -22,82 +22,50 @@ typedef struct RgGraph RgGraph;
 typedef uint32_t RgFlags;
 typedef void(RgPassCallback)(void*, RgCmdBuffer*);
 
-typedef struct RgResourceRef
-{
-    uint32_t index;
-} RgResourceRef;
-
-typedef struct RgPassRef
-{
-    uint32_t index;
-} RgPassRef;
-
-typedef enum RgWindowSystem
-{
-    RG_WINDOW_SYSTEM_NONE,
-    RG_WINDOW_SYSTEM_WIN32,
-    RG_WINDOW_SYSTEM_X11,
-    RG_WINDOW_SYSTEM_WAYLAND,
-} RgWindowSystem;
-
-typedef struct RgDeviceInfo
-{
-    bool enable_validation;
-    RgWindowSystem window_system;
-} RgDeviceInfo;
-
-typedef struct RgPlatformWindowInfo
-{
-    struct
-    {
-        void *window;
-        void *display;
-    } x11;
-    struct
-    {
-        void *window;
-        void *display;
-    } wl;
-    struct
-    {
-        void*window;
-    } win32;
-} RgPlatformWindowInfo;
-
-typedef struct RgGraphInfo
-{
-    // Dimensions can be zero if not using a swapchain
-    uint32_t width;
-    uint32_t height;
-
-    void *user_data;
-    RgPlatformWindowInfo *window;
-} RgGraphInfo;
-
 typedef enum RgFormat
 {
     RG_FORMAT_UNDEFINED = 0,
 
-    RG_FORMAT_RGB8_UNORM = 1,
-    RG_FORMAT_RGBA8_UNORM = 2,
+    RG_FORMAT_R8_UNORM = 1,
+    RG_FORMAT_RG8_UNORM = 2,
+    RG_FORMAT_RGB8_UNORM = 3,
+    RG_FORMAT_RGBA8_UNORM = 4,
 
-    RG_FORMAT_R32_UINT = 3,
+    RG_FORMAT_R8_UINT = 5,
+    RG_FORMAT_RG8_UINT = 6,
+    RG_FORMAT_RGB8_UINT = 7,
+    RG_FORMAT_RGBA8_UINT = 8,
 
-    RG_FORMAT_R32_SFLOAT = 4,
-    RG_FORMAT_RG32_SFLOAT = 5,
-    RG_FORMAT_RGB32_SFLOAT = 6,
-    RG_FORMAT_RGBA32_SFLOAT = 7,
+    RG_FORMAT_R16_UINT = 9,
+    RG_FORMAT_RG16_UINT = 10,
+    RG_FORMAT_RGB16_UINT = 11,
+    RG_FORMAT_RGBA16_UINT = 12,
 
-    RG_FORMAT_RGBA16_SFLOAT = 8,
+    RG_FORMAT_R32_UINT = 13,
+    RG_FORMAT_RG32_UINT = 14,
+    RG_FORMAT_RGB32_UINT = 15,
+    RG_FORMAT_RGBA32_UINT = 16,
 
-    RG_FORMAT_D32_SFLOAT_S8_UINT = 9,
-    RG_FORMAT_D32_SFLOAT = 10,
-    RG_FORMAT_D24_UNORM_S8_UINT = 11,
-    RG_FORMAT_D16_UNORM_S8_UINT = 12,
-    RG_FORMAT_D16_UNORM = 13,
+    RG_FORMAT_R32_SFLOAT = 17,
+    RG_FORMAT_RG32_SFLOAT = 18,
+    RG_FORMAT_RGB32_SFLOAT = 19,
+    RG_FORMAT_RGBA32_SFLOAT = 20,
 
-    RG_FORMAT_BC7_UNORM = 14,
-    RG_FORMAT_BC7_SRGB = 15,
+    RG_FORMAT_BGRA8_UNORM = 21,
+    RG_FORMAT_BGRA8_SRGB = 22,
+
+    RG_FORMAT_R16_SFLOAT = 23,
+    RG_FORMAT_RG16_SFLOAT = 24,
+    RG_FORMAT_RGBA16_SFLOAT = 25,
+
+    RG_FORMAT_D32_SFLOAT_S8_UINT = 26,
+    RG_FORMAT_D32_SFLOAT = 27,
+    RG_FORMAT_D24_UNORM_S8_UINT = 28,
+    RG_FORMAT_D16_UNORM_S8_UINT = 29,
+    RG_FORMAT_D16_UNORM = 30,
+
+    RG_FORMAT_BC7_UNORM = 31,
+    RG_FORMAT_BC7_SRGB = 32,
 } RgFormat;
 
 typedef enum RgImageUsage
@@ -396,10 +364,65 @@ typedef enum RgObjectType
     RG_OBJECT_TYPE_BUFFER = 2,
 } RgObjectType;
 
+typedef struct RgResourceRef
+{
+    uint32_t index;
+} RgResourceRef;
+
+typedef struct RgPassRef
+{
+    uint32_t index;
+} RgPassRef;
+
+typedef enum RgWindowSystem
+{
+    RG_WINDOW_SYSTEM_NONE,
+    RG_WINDOW_SYSTEM_WIN32,
+    RG_WINDOW_SYSTEM_X11,
+    RG_WINDOW_SYSTEM_WAYLAND,
+} RgWindowSystem;
+
+typedef struct RgDeviceInfo
+{
+    bool enable_validation;
+    RgWindowSystem window_system;
+} RgDeviceInfo;
+
+typedef struct RgPlatformWindowInfo
+{
+    struct
+    {
+        void *window;
+        void *display;
+    } x11;
+    struct
+    {
+        void *window;
+        void *display;
+    } wl;
+    struct
+    {
+        void*window;
+    } win32;
+} RgPlatformWindowInfo;
+
+typedef struct RgGraphInfo
+{
+    // Dimensions can be zero if not using a swapchain
+    uint32_t width;
+    uint32_t height;
+
+    // preferred_swapchain_format can be undefined if not using a swapchain
+    RgFormat preferred_swapchain_format;
+
+    void *user_data;
+    RgPlatformWindowInfo *window;
+} RgGraphInfo;
+
 RgDevice *rgDeviceCreate(RgDeviceInfo *info);
 void rgDeviceDestroy(RgDevice* device);
 void rgDeviceWaitIdle(RgDevice* device);
-RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device);
+RgFormat rgDeviceGetSupportedDepthFormat(RgDevice* device, RgFormat wanted_format);
 
 RgCmdPool *rgCmdPoolCreate(RgDevice* device);
 void rgCmdPoolDestroy(RgDevice* device, RgCmdPool *cmd_pool);
