@@ -21,8 +21,11 @@
 #endif
 
 #define VOLK_IMPLEMENTATION
-#include "vk_mem_alloc.h"
 #include "volk.h"
+
+#ifndef RG_ALLOCATOR
+#include "vk_mem_alloc.h"
+#endif
 
 #define RG_MAX(a, b) ((a > b) ? (a) : (b))
 #define RG_CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : (x) > (hi) ? (hi) : (x))
@@ -270,9 +273,13 @@ struct RgDevice
 
     VkPhysicalDevice physical_device;
     VkDevice device;
-    VmaAllocator vma_allocator;
 
+#ifdef RG_ALLOCATOR
     RgAllocator *allocator;
+#else
+    VmaAllocator allocator;
+#endif
+
 
     VkQueue graphics_queue;
 
@@ -986,7 +993,7 @@ static VkResult rgMapAllocation(RgAllocator *allocator, const RgAllocation *allo
 
     if (allocation->mapping)
     {
-        *ppData = allocation->mapping + allocation->offset;
+        *ppData = ((uint8_t*)allocation->mapping) + allocation->offset;
         return VK_SUCCESS;
     }
     return VK_ERROR_MEMORY_MAP_FAILED;
@@ -1358,9 +1365,11 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
         0,
         &device->graphics_queue);
 
-    //
+#ifdef RG_ALLOCATOR
+    // Initialize allocator
+    device->allocator = rgAllocatorCreate(device);
+#else
     // Initialize VMA
-    //
     VmaVulkanFunctions vk_funcs = {0};
     vk_funcs.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
     vk_funcs.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
@@ -1386,10 +1395,8 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
     allocator_info.instance = device->instance;
     allocator_info.pVulkanFunctions = &vk_funcs;
 
-    VK_CHECK(vmaCreateAllocator(&allocator_info, &device->vma_allocator));
-
-    // Initialize allocator
-    device->allocator = rgAllocatorCreate(device);
+    VK_CHECK(vmaCreateAllocator(&allocator_info, &device->allocator));
+#endif
 
     return device;
 }
@@ -1398,8 +1405,12 @@ void rgDeviceDestroy(RgDevice *device)
 {
     VK_CHECK(vkDeviceWaitIdle(device->device));
 
+#ifdef RG_ALLOCATOR
     rgAllocatorDestroy(device->allocator);
-    vmaDestroyAllocator(device->vma_allocator);
+#else
+    vmaDestroyAllocator(device->allocator);
+#endif
+
     vkDestroyDevice(device->device, NULL);
 
     if (device->info.enable_validation)
@@ -1946,7 +1957,7 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
     }
 
     VK_CHECK(vmaCreateBuffer(
-        device->vma_allocator, &ci, &alloc_info, &buffer->buffer, &buffer->allocation, NULL));
+        device->allocator, &ci, &alloc_info, &buffer->buffer, &buffer->allocation, NULL));
 #endif
 
     return buffer;
@@ -1961,7 +1972,7 @@ void rgBufferDestroy(RgDevice *device, RgBuffer *buffer)
         rgAllocatorFree(device->allocator, &buffer->allocation);
         vkDestroyBuffer(device->device, buffer->buffer, NULL);
 #else
-        vmaDestroyBuffer(device->vma_allocator, buffer->buffer, buffer->allocation);
+        vmaDestroyBuffer(device->allocator, buffer->buffer, buffer->allocation);
 #endif
     }
 
@@ -1974,7 +1985,7 @@ void *rgBufferMap(RgDevice *device, RgBuffer *buffer)
 #ifdef RG_ALLOCATOR
     VK_CHECK(rgMapAllocation(device->allocator, &buffer->allocation, &ptr));
 #else
-    VK_CHECK(vmaMapMemory(device->vma_allocator, buffer->allocation, &ptr));
+    VK_CHECK(vmaMapMemory(device->allocator, buffer->allocation, &ptr));
 #endif
     return ptr;
 }
@@ -1984,7 +1995,7 @@ void rgBufferUnmap(RgDevice *device, RgBuffer *buffer)
 #ifdef RG_ALLOCATOR
     rgUnmapAllocation(device->allocator, &buffer->allocation);
 #else
-    vmaUnmapMemory(device->vma_allocator, buffer->allocation);
+    vmaUnmapMemory(device->allocator, buffer->allocation);
 #endif
 }
 
@@ -2124,7 +2135,7 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
         alloc_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
         VK_CHECK(vmaCreateImage(
-            device->vma_allocator,
+            device->allocator,
             &ci,
             &alloc_create_info,
             &image->image,
@@ -2188,7 +2199,7 @@ void rgImageDestroy(RgDevice *device, RgImage *image)
         vkDestroyImage(device->device, image->image, NULL);
         rgAllocatorFree(device->allocator, &image->allocation);
 #else
-        vmaDestroyImage(device->vma_allocator, image->image, image->allocation);
+        vmaDestroyImage(device->allocator, image->image, image->allocation);
 #endif
     }
 
