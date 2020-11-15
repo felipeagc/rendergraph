@@ -27,7 +27,8 @@
 #include "vk_mem_alloc.h"
 #endif
 
-#define RG_MAX(a, b) ((a > b) ? (a) : (b))
+#define RG_MAX(a, b) (((a) > (b)) ? (a) : (b))
+#define RG_MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define RG_CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : (x) > (hi) ? (hi) : (x))
 #define RG_LENGTH(array) (sizeof(array) / sizeof(array[0]))
 
@@ -43,14 +44,15 @@ enum {
     RG_BUFFER_POOL_CHUNK_SIZE = 65536,
 };
 
-#define VK_CHECK(result)                                                                 \
-    do                                                                                   \
-    {                                                                                    \
-        if (result != VK_SUCCESS)                                                        \
-        {                                                                                \
-            fprintf(stderr, "%s:%u vulkan error: %d\n", __FILE__, __LINE__, result);     \
-            exit(1);                                                                     \
-        }                                                                                \
+#define VK_CHECK(result)                                                                  \
+    do                                                                                    \
+    {                                                                                     \
+        VkResult temp_result = result;                                                    \
+        if (temp_result != VK_SUCCESS)                                                    \
+        {                                                                                 \
+            fprintf(stderr, "%s:%u vulkan error: %d\n", __FILE__, __LINE__, temp_result); \
+            exit(1);                                                                      \
+        }                                                                                 \
     } while (0)
 
 // Hashing {{{
@@ -230,11 +232,6 @@ static uint64_t *rgHashmapGet(RgHashmap *hashmap, uint64_t hash)
 // }}}
 
 // Types {{{
-typedef struct RgAllocator
-{
-    RgDevice *device;
-} RgAllocator;
-
 typedef enum RgAllocationType
 {
     RG_ALLOCATION_TYPE_UNKNOWN,
@@ -242,6 +239,30 @@ typedef enum RgAllocationType
     RG_ALLOCATION_TYPE_CPU_TO_GPU,
     RG_ALLOCATION_TYPE_GPU_TO_CPU,
 } RgAllocationType;
+
+typedef struct RgMemoryChunk
+{
+    size_t used;
+    bool split;
+} RgMemoryChunk;
+
+typedef struct RgMemoryBlock
+{
+    VkDeviceMemory handle;
+    size_t size;
+    uint32_t memory_type_index;
+    RgAllocationType type;
+
+    RgMemoryChunk *chunks;
+    uint32_t chunk_count;
+    void *mapping;
+} RgMemoryBlock;
+
+typedef struct RgAllocator
+{
+    RgDevice *device;
+    ARRAY_OF(RgMemoryBlock*) blocks;
+} RgAllocator;
 
 typedef struct RgAllocationInfo
 {
@@ -251,10 +272,9 @@ typedef struct RgAllocationInfo
 
 typedef struct RgAllocation
 {
-    VkDeviceMemory handle;
     size_t size;
     size_t offset;
-    void *mapping;
+    RgMemoryBlock *block;
 } RgAllocation;
 
 struct RgDevice
@@ -852,27 +872,203 @@ rgFindMemoryProperties(
     return -1;
 }
 
-static RgAllocator *rgAllocatorCreate(RgDevice *device)
+static inline RgMemoryChunk *rgMemoryChunkParent(
+    RgMemoryBlock *block,
+    RgMemoryChunk *chunk)
 {
-    RgAllocator *allocator = malloc(sizeof(*allocator));
-    memset(allocator, 0, sizeof(*allocator));
+    ptrdiff_t index = (ptrdiff_t)(chunk - block->chunks);
+    assert(index >= 0);
 
-    allocator->device = device;
+    if (index == 0) return NULL;
 
-    return allocator;
+    index = (index - 1) / 2;
+    if (index < 0) return NULL;
+
+    return &block->chunks[index];
 }
 
-static void rgAllocatorDestroy(RgAllocator *allocator)
+static inline RgMemoryChunk *rgMemoryChunkLeftChild(
+    RgMemoryBlock *block,
+    RgMemoryChunk *chunk)
 {
-    free(allocator);
+    ptrdiff_t index = (ptrdiff_t)(chunk - block->chunks);
+    assert(index >= 0);
+
+    index = 2 * index + 1;
+    if (index >= block->chunk_count) return NULL;
+
+    return &block->chunks[index];
 }
 
-static VkResult rgAllocatorAllocate(
-    RgAllocator *allocator,
-    RgAllocationInfo *info,
+static inline RgMemoryChunk *rgMemoryChunkRightChild(
+    RgMemoryBlock *block,
+    RgMemoryChunk *chunk)
+{
+    ptrdiff_t index = (ptrdiff_t)(chunk - block->chunks);
+    assert(index >= 0);
+
+    index = 2 * index + 2;
+    if (index >= block->chunk_count) return NULL;
+
+    return &block->chunks[index];
+}
+
+static inline size_t rgMemoryChunkSize(
+    RgMemoryBlock *block,
+    RgMemoryChunk *chunk)
+{
+    ptrdiff_t index = (ptrdiff_t)(chunk - block->chunks);
+    assert(index >= 0);
+
+    // Tree level of the chunk starting from 0
+    size_t tree_level = floor(log2((double)(index+1)));
+
+    // chunk_size = block->size / pow(2, tree_level);
+    size_t chunk_size = block->size >> tree_level;
+    assert(chunk_size >= 1);
+    return chunk_size;
+}
+
+static inline size_t rgMemoryChunkOffset(
+    RgMemoryBlock *block,
+    RgMemoryChunk *chunk)
+{
+    ptrdiff_t index = (ptrdiff_t)(chunk - block->chunks);
+    assert(index >= 0);
+
+    if (index == 0) return 0;
+
+    RgMemoryChunk *parent = rgMemoryChunkParent(block, chunk);
+    assert(parent);
+
+    size_t parent_offset = rgMemoryChunkOffset(block, parent);
+
+    if (index & 1)
+    {
+        // Right
+        parent_offset += rgMemoryChunkSize(block, chunk);
+    }
+
+    return parent_offset;
+}
+
+static inline RgMemoryChunk *rgMemoryChunkSplit(
+    RgMemoryBlock *block,
+    RgMemoryChunk *chunk,
+    size_t size,
+    size_t alignment)
+{
+    assert(chunk);
+
+    ptrdiff_t index = (ptrdiff_t)(chunk - block->chunks);
+    assert(index >= 0);
+
+    const size_t chunk_size = rgMemoryChunkSize(block, chunk);
+    const size_t chunk_offset = rgMemoryChunkOffset(block, chunk);
+
+    RgMemoryChunk *left = rgMemoryChunkLeftChild(block, chunk);
+    RgMemoryChunk *right = rgMemoryChunkRightChild(block, chunk);
+
+    const size_t left_offset = chunk_offset;
+    const size_t right_offset = chunk_offset + (chunk_size / 2);
+
+    bool can_split = true;
+
+    // We have to split into aligned chunks
+    can_split &= ((left_offset % alignment == 0) || (right_offset % alignment == 0));
+
+    // We have to be able to split into the required size
+    can_split &= (size <= (chunk_size / 2));
+
+    // We have to be able to have enough space to split
+    can_split &= (chunk->used <= (chunk_size / 2));
+
+    // chunk needs to have children in order to split
+    can_split &= ((left != NULL) && (right != NULL));
+
+    /* printf("index = %ld\n", index); */
+    /* printf("size = %zu\n", size); */
+    /* printf("alignment = %zu\n", alignment); */
+    /* printf("chunk->split = %u\n", (uint32_t)chunk->split); */
+    /* printf("chunk->used = %zu\n", chunk->used); */
+    /* printf("chunk_size = %zu\n", chunk_size); */
+    /* printf("chunk_offset = %zu\n", chunk_offset); */
+
+    if (can_split)
+    {
+        if (!chunk->split)
+        {
+            // Chunk is not yet split, so do it now
+            chunk->split = true;
+
+            left->split = false;
+            left->used = chunk->used;
+
+            right->split = false;
+            right->used = 0;
+        }
+
+        RgMemoryChunk *returned_chunk = NULL;
+
+        returned_chunk = rgMemoryChunkSplit(block, left, size, alignment);
+        if (returned_chunk) return returned_chunk;
+
+        returned_chunk = rgMemoryChunkSplit(block, right, size, alignment);
+        if (returned_chunk) return returned_chunk;
+    }
+
+    // We can't split, but if the chunk meets the requirements, return it
+    if ((!chunk->split) &&
+        (chunk->used == 0) &&
+        (chunk_size >= size) &&
+        (chunk_offset % alignment == 0))
+    {
+        return chunk;
+    }
+
+    return NULL;
+}
+
+static VkResult rgMemoryBlockAllocate(
+    RgMemoryBlock *block,
+    size_t size,
+    size_t alignment,
     RgAllocation *allocation)
 {
-    memset(allocation, 0, sizeof(*allocation));
+    assert(block->chunk_count > 0);
+    RgMemoryChunk *chunk = &block->chunks[0];
+    chunk = rgMemoryChunkSplit(
+        block,
+        chunk,
+        size,
+        alignment);
+
+    if (!chunk)
+    {
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+
+    assert(chunk->used == 0);
+    chunk->used = size;
+
+    size_t offset = rgMemoryChunkOffset(block, chunk);
+
+    allocation->block = block;
+    allocation->size = size;
+    allocation->offset = offset;
+
+    return VK_SUCCESS;
+}
+
+static VkResult
+rgAllocatorCreateMemoryBlock(
+    RgAllocator *allocator,
+    RgAllocationInfo *info,
+    RgMemoryBlock **out_block)
+{
+    VkResult result = VK_SUCCESS;
+
+    int32_t memory_type_index = -1;
 
     VkMemoryPropertyFlagBits preferred_properties = 0;
     switch (info->type)
@@ -895,7 +1091,7 @@ static VkResult rgAllocatorAllocate(
     case RG_ALLOCATION_TYPE_UNKNOWN: break;
     }
 
-    int32_t memory_type_index = rgFindMemoryProperties(
+    memory_type_index = rgFindMemoryProperties(
         &allocator->device->physical_device_memory_properties,
         info->requirements.memoryTypeBits,
         preferred_properties);
@@ -921,24 +1117,52 @@ static VkResult rgAllocatorAllocate(
             break;
         case RG_ALLOCATION_TYPE_UNKNOWN: break;
         }
+
+        memory_type_index = rgFindMemoryProperties(
+            &allocator->device->physical_device_memory_properties,
+            info->requirements.memoryTypeBits,
+            preferred_properties);
     }
-    
+
     if (memory_type_index == -1)
     {
-        // Now we actually failed.
         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
 
     assert(memory_type_index >= 0);
 
-    VkResult result = VK_SUCCESS;
+    const uint64_t DEFAULT_DEVICE_MEMBLOCK_SIZE = 256 * 1024 * 1024;
+    const uint64_t DEFAULT_HOST_MEMBLOCK_SIZE = 64 * 1024 * 1024;
+
+    uint64_t memblock_size = 0;
+    if (preferred_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    {
+        memblock_size = DEFAULT_HOST_MEMBLOCK_SIZE;
+    }
+    else
+    {
+        memblock_size = DEFAULT_DEVICE_MEMBLOCK_SIZE;
+    }
+
+    memblock_size = RG_MAX(info->requirements.size, memblock_size);
+
+    // Round memblock_size to the next power of 2
+    memblock_size--;
+    memblock_size |= memblock_size >> 1;
+    memblock_size |= memblock_size >> 2;
+    memblock_size |= memblock_size >> 4;
+    memblock_size |= memblock_size >> 8;
+    memblock_size |= memblock_size >> 16;
+    memblock_size |= memblock_size >> 32;
+    memblock_size++;
+
+    assert(memblock_size >= info->requirements.size);
 
     VkMemoryAllocateInfo vk_allocate_info;
     memset(&vk_allocate_info, 0, sizeof(vk_allocate_info));
     vk_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    vk_allocate_info.allocationSize = info->requirements.size;
+    vk_allocate_info.allocationSize = memblock_size;
     vk_allocate_info.memoryTypeIndex = (uint32_t)memory_type_index;
-
 
     VkDeviceMemory vk_memory = VK_NULL_HANDLE;
     result = vkAllocateMemory(
@@ -947,53 +1171,140 @@ static VkResult rgAllocatorAllocate(
         NULL,
         &vk_memory);
 
-    if (result != VK_SUCCESS)
-    {
-        return result;
-    }
+    if (result != VK_SUCCESS) return result;
 
-    allocation->handle = vk_memory;
-    allocation->size = info->requirements.size;
-    allocation->offset = 0;
+    void *mapping = NULL;
 
     if (preferred_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
     {
         result = vkMapMemory(
             allocator->device->device,
-            allocation->handle,
+            vk_memory,
             0,
             VK_WHOLE_SIZE,
             0,
-            &allocation->mapping);
+            &mapping);
 
         if (result != VK_SUCCESS)
         {
-            vkFreeMemory(allocator->device->device, allocation->handle, NULL);
+            vkFreeMemory(allocator->device->device, vk_memory, NULL);
             return result;
         }
     }
 
-    return VK_SUCCESS;
+    RgMemoryBlock *block = malloc(sizeof(*block));
+    memset(block, 0, sizeof(*block));
+
+    block->handle = vk_memory;
+    block->mapping = mapping;
+    block->size = memblock_size;
+    block->memory_type_index = (uint32_t)memory_type_index;
+    block->type = info->type;
+    block->chunk_count = RG_MIN(2 * 256 - 1, 2 * memblock_size - 1);
+    block->chunks = malloc(sizeof(*block->chunks) * block->chunk_count);
+    memset(block->chunks, 0, sizeof(*block->chunks) * block->chunk_count);
+
+    arrPush(&allocator->blocks, block);
+
+    *out_block = block;
+    
+    return result;
+}
+
+static void
+rgAllocatorFreeMemoryBlock(RgAllocator *allocator, RgMemoryBlock *block)
+{
+    if (block->mapping)
+    {
+        vkUnmapMemory(
+            allocator->device->device,
+            block->handle);
+    }
+    vkFreeMemory(allocator->device->device, block->handle, NULL);
+    free(block->chunks);
+    free(block);
+}
+
+static RgAllocator *rgAllocatorCreate(RgDevice *device)
+{
+    RgAllocator *allocator = malloc(sizeof(*allocator));
+    memset(allocator, 0, sizeof(*allocator));
+
+    allocator->device = device;
+
+    return allocator;
+}
+
+static void rgAllocatorDestroy(RgAllocator *allocator)
+{
+    for (uint32_t i = 0; i < allocator->blocks.len; ++i)
+    {
+        RgMemoryBlock *block = allocator->blocks.ptr[i];
+        rgAllocatorFreeMemoryBlock(allocator, block);
+    }
+    arrFree(&allocator->blocks);
+    free(allocator);
+}
+
+static VkResult rgAllocatorAllocate(
+    RgAllocator *allocator,
+    RgAllocationInfo *info,
+    RgAllocation *allocation)
+{
+    memset(allocation, 0, sizeof(*allocation));
+
+    for (int32_t i = ((int32_t)allocator->blocks.len)-1; i >= 0; --i)
+    {
+        RgMemoryBlock *block = allocator->blocks.ptr[i];
+
+        if (info->type == block->type)
+        {
+            VkResult result = rgMemoryBlockAllocate(
+                block,
+                info->requirements.size,
+                info->requirements.alignment,
+                allocation);
+
+            if (info->type == RG_ALLOCATION_TYPE_CPU_TO_GPU
+                || info->type == RG_ALLOCATION_TYPE_GPU_TO_CPU)
+            {
+                assert(block->mapping);
+            }
+
+            if (result != VK_SUCCESS) continue;
+
+            return VK_SUCCESS;
+        }
+    }
+
+    // We could not allocate from any existing memory block, so let's make a new one
+    RgMemoryBlock *block = NULL;
+    VkResult result = rgAllocatorCreateMemoryBlock(allocator, info, &block);
+    if (result != VK_SUCCESS) return result;
+
+    result = rgMemoryBlockAllocate(
+        block,
+        info->requirements.size,
+        info->requirements.alignment,
+        allocation);
+
+    return result;
 }
 
 static void rgAllocatorFree(RgAllocator *allocator, const RgAllocation *allocation)
 {
-    if (allocation->mapping)
-    {
-        vkUnmapMemory(
-            allocator->device->device,
-            allocation->handle);
-    }
-    vkFreeMemory(allocator->device->device, allocation->handle, NULL);
+    (void)allocator;
+    (void)allocation;
 }
 
 static VkResult rgMapAllocation(RgAllocator *allocator, const RgAllocation *allocation, void **ppData)
 {
     (void)allocator;
 
-    if (allocation->mapping)
+    assert(allocation->block->mapping);
+    if (allocation->block->mapping)
     {
-        *ppData = ((uint8_t*)allocation->mapping) + allocation->offset;
+        *ppData = ((uint8_t*)allocation->block->mapping) + allocation->offset;
         return VK_SUCCESS;
     }
     return VK_ERROR_MEMORY_MAP_FAILED;
@@ -1026,6 +1337,8 @@ static bool check_layer_support(
     const char** required_layers,
     uint32_t required_layer_count)
 {
+    if (required_layer_count == 0) return true;
+
     uint32_t count;
     vkEnumerateInstanceLayerProperties(&count, NULL);
     VkLayerProperties *available_layers =
@@ -1937,7 +2250,7 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
     VK_CHECK(vkBindBufferMemory(
         device->device,
         buffer->buffer,
-        buffer->allocation.handle,
+        buffer->allocation.block->handle,
         buffer->allocation.offset));
 #else
     VmaAllocationCreateInfo alloc_info = {0};
@@ -2127,7 +2440,7 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
         VK_CHECK(vkBindImageMemory(
                      device->device,
                      image->image,
-                     image->allocation.handle,
+                     image->allocation.block->handle,
                      image->allocation.offset));
 #else
         VmaAllocationCreateInfo alloc_create_info;

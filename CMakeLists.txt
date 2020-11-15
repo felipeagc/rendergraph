@@ -6,7 +6,6 @@ add_library(
 
 	rendergraph/rendergraph.c
 	rendergraph/rendergraph_ext.c
-	rendergraph/vk_mem_alloc.cpp
 
 	rendergraph/rendergraph.h
 	rendergraph/rendergraph_ext.h
