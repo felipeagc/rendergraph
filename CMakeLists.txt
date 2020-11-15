@@ -10,7 +10,6 @@ add_library(
 	rendergraph/rendergraph.h
 	rendergraph/rendergraph_ext.h
 	rendergraph/spirv.h
-	rendergraph/vk_mem_alloc.h
 	rendergraph/volk.h)
 
 if (MSVC)

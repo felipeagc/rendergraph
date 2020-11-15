@@ -7,7 +7,6 @@
 
 #ifdef RENDERGRAPH_FEATURE_VULKAN
 
-#define RG_ALLOCATOR
 #define VK_NO_PROTOTYPES
 
 #if defined(__linux__)
@@ -22,10 +21,6 @@
 
 #define VOLK_IMPLEMENTATION
 #include "volk.h"
-
-#ifndef RG_ALLOCATOR
-#include "vk_mem_alloc.h"
-#endif
 
 #define RG_MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define RG_MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -294,12 +289,7 @@ struct RgDevice
     VkPhysicalDevice physical_device;
     VkDevice device;
 
-#ifdef RG_ALLOCATOR
     RgAllocator *allocator;
-#else
-    VmaAllocator allocator;
-#endif
-
 
     VkQueue graphics_queue;
 
@@ -316,22 +306,14 @@ struct RgImage
     VkImage image;
     VkImageView view;
     VkImageAspectFlags aspect;
-#ifdef RG_ALLOCATOR
     RgAllocation allocation;
-#else
-    VmaAllocation allocation;
-#endif
 };
 
 struct RgBuffer
 {
     RgBufferInfo info;
     VkBuffer buffer;
-#ifdef RG_ALLOCATOR
     RgAllocation allocation;
-#else
-    VmaAllocation allocation;
-#endif
 };
 
 typedef struct RgBufferPool RgBufferPool;
@@ -1678,38 +1660,8 @@ RgDevice *rgDeviceCreate(RgDeviceInfo *info)
         0,
         &device->graphics_queue);
 
-#ifdef RG_ALLOCATOR
     // Initialize allocator
     device->allocator = rgAllocatorCreate(device);
-#else
-    // Initialize VMA
-    VmaVulkanFunctions vk_funcs = {0};
-    vk_funcs.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
-    vk_funcs.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
-    vk_funcs.vkAllocateMemory = vkAllocateMemory;
-    vk_funcs.vkFreeMemory = vkFreeMemory;
-    vk_funcs.vkMapMemory = vkMapMemory;
-    vk_funcs.vkUnmapMemory = vkUnmapMemory;
-    vk_funcs.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
-    vk_funcs.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges;
-    vk_funcs.vkBindBufferMemory = vkBindBufferMemory;
-    vk_funcs.vkBindImageMemory = vkBindImageMemory;
-    vk_funcs.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
-    vk_funcs.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements;
-    vk_funcs.vkCreateBuffer = vkCreateBuffer;
-    vk_funcs.vkDestroyBuffer = vkDestroyBuffer;
-    vk_funcs.vkCreateImage = vkCreateImage;
-    vk_funcs.vkDestroyImage = vkDestroyImage;
-    vk_funcs.vkCmdCopyBuffer = vkCmdCopyBuffer;
-
-    VmaAllocatorCreateInfo allocator_info = {0};
-    allocator_info.physicalDevice = device->physical_device;
-    allocator_info.device = device->device;
-    allocator_info.instance = device->instance;
-    allocator_info.pVulkanFunctions = &vk_funcs;
-
-    VK_CHECK(vmaCreateAllocator(&allocator_info, &device->allocator));
-#endif
 
     return device;
 }
@@ -1718,11 +1670,7 @@ void rgDeviceDestroy(RgDevice *device)
 {
     VK_CHECK(vkDeviceWaitIdle(device->device));
 
-#ifdef RG_ALLOCATOR
     rgAllocatorDestroy(device->allocator);
-#else
-    vmaDestroyAllocator(device->allocator);
-#endif
 
     vkDestroyDevice(device->device, NULL);
 
@@ -2225,7 +2173,6 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
     if (buffer->info.usage & RG_BUFFER_USAGE_STORAGE)
         ci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
-#ifdef RG_ALLOCATOR
     VK_CHECK(vkCreateBuffer(
         device->device,
         &ci,
@@ -2252,26 +2199,6 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
         buffer->buffer,
         buffer->allocation.block->handle,
         buffer->allocation.offset));
-#else
-    VmaAllocationCreateInfo alloc_info = {0};
-    alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-    alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-    switch (buffer->info.memory)
-    {
-    case RG_BUFFER_MEMORY_HOST:
-        alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-        alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        break;
-    case RG_BUFFER_MEMORY_DEVICE:
-        alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-        alloc_info.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        break;
-    }
-
-    VK_CHECK(vmaCreateBuffer(
-        device->allocator, &ci, &alloc_info, &buffer->buffer, &buffer->allocation, NULL));
-#endif
 
     return buffer;
 }
@@ -2281,12 +2208,8 @@ void rgBufferDestroy(RgDevice *device, RgBuffer *buffer)
     VK_CHECK(vkDeviceWaitIdle(device->device));
     if (buffer->buffer)
     {
-#ifdef RG_ALLOCATOR
         rgAllocatorFree(device->allocator, &buffer->allocation);
         vkDestroyBuffer(device->device, buffer->buffer, NULL);
-#else
-        vmaDestroyBuffer(device->allocator, buffer->buffer, buffer->allocation);
-#endif
     }
 
     free(buffer);
@@ -2295,21 +2218,13 @@ void rgBufferDestroy(RgDevice *device, RgBuffer *buffer)
 void *rgBufferMap(RgDevice *device, RgBuffer *buffer)
 {
     void *ptr;
-#ifdef RG_ALLOCATOR
     VK_CHECK(rgMapAllocation(device->allocator, &buffer->allocation, &ptr));
-#else
-    VK_CHECK(vmaMapMemory(device->allocator, buffer->allocation, &ptr));
-#endif
     return ptr;
 }
 
 void rgBufferUnmap(RgDevice *device, RgBuffer *buffer)
 {
-#ifdef RG_ALLOCATOR
     rgUnmapAllocation(device->allocator, &buffer->allocation);
-#else
-    vmaUnmapMemory(device->allocator, buffer->allocation);
-#endif
 }
 
 void rgBufferUpload(
@@ -2428,7 +2343,6 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
         if (image->info.usage & RG_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)
             ci.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
-#ifdef RG_ALLOCATOR
         VK_CHECK(vkCreateImage(device->device, &ci, NULL, &image->image));
 
         RgAllocationInfo alloc_info = {0};
@@ -2442,19 +2356,6 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
                      image->image,
                      image->allocation.block->handle,
                      image->allocation.offset));
-#else
-        VmaAllocationCreateInfo alloc_create_info;
-        memset(&alloc_create_info, 0, sizeof(alloc_create_info));
-        alloc_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-        VK_CHECK(vmaCreateImage(
-            device->allocator,
-            &ci,
-            &alloc_create_info,
-            &image->image,
-            &image->allocation,
-            NULL));
-#endif
     }
 
     {
@@ -2508,12 +2409,8 @@ void rgImageDestroy(RgDevice *device, RgImage *image)
     }
     if (image->image)
     {
-#ifdef RG_ALLOCATOR
         vkDestroyImage(device->device, image->image, NULL);
         rgAllocatorFree(device->allocator, &image->allocation);
-#else
-        vmaDestroyImage(device->allocator, image->image, image->allocation);
-#endif
     }
 
     free(image);
