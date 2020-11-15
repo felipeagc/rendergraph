@@ -270,6 +270,7 @@ typedef struct RgAllocation
     size_t size;
     size_t offset;
     RgMemoryBlock *block;
+    size_t chunk_index;
 } RgAllocation;
 
 struct RgDevice
@@ -1011,6 +1012,34 @@ static inline RgMemoryChunk *rgMemoryChunkSplit(
     return NULL;
 }
 
+// Frees the chunk, tries to join it back with parent recursively
+static inline void rgMemoryChunkJoin(RgMemoryBlock *block, RgMemoryChunk *chunk)
+{
+    assert(chunk->split);
+
+    RgMemoryChunk *left = rgMemoryChunkLeftChild(block, chunk);
+    RgMemoryChunk *right = rgMemoryChunkRightChild(block, chunk);
+
+    bool can_join = true;
+    can_join &= (left->used == 0);
+    can_join &= (!left->split);
+    can_join &= (right->used == 0);
+    can_join &= (!right->split);
+    
+    if (can_join)
+    {
+        // Join
+        chunk->split = false;
+        chunk->used = 0;
+
+        RgMemoryChunk *parent = rgMemoryChunkParent(block, chunk);
+        if (parent)
+        {
+            rgMemoryChunkJoin(block, parent);
+        }
+    }
+}
+
 static VkResult rgMemoryBlockAllocate(
     RgMemoryBlock *block,
     size_t size,
@@ -1038,8 +1067,22 @@ static VkResult rgMemoryBlockAllocate(
     allocation->block = block;
     allocation->size = size;
     allocation->offset = offset;
+    allocation->chunk_index = (size_t)(chunk - block->chunks);
 
     return VK_SUCCESS;
+}
+
+static void rgMemoryBlockFree(
+    RgMemoryBlock *block,
+    const RgAllocation *allocation)
+{
+    size_t chunk_index = allocation->chunk_index;
+    RgMemoryChunk *chunk = &block->chunks[chunk_index];
+
+    chunk->used = 0;
+
+    RgMemoryChunk *parent = rgMemoryChunkParent(block, chunk);
+    if (parent) rgMemoryChunkJoin(block, parent);
 }
 
 static VkResult
@@ -1276,7 +1319,7 @@ static VkResult rgAllocatorAllocate(
 static void rgAllocatorFree(RgAllocator *allocator, const RgAllocation *allocation)
 {
     (void)allocator;
-    (void)allocation;
+    rgMemoryBlockFree(allocation->block, allocation);
 }
 
 static VkResult rgMapAllocation(RgAllocator *allocator, const RgAllocation *allocation, void **ppData)
