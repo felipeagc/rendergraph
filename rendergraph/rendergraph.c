@@ -935,6 +935,24 @@ static inline size_t rgMemoryChunkOffset(
     return parent_offset;
 }
 
+static inline void rgMemoryChunkUpdateUsage(
+    RgMemoryBlock *block,
+    RgMemoryChunk *chunk)
+{
+    if (chunk->split)
+    {
+        RgMemoryChunk *left = rgMemoryChunkLeftChild(block, chunk);
+        RgMemoryChunk *right = rgMemoryChunkRightChild(block, chunk);
+        chunk->used = left->used + right->used;
+    }
+
+    RgMemoryChunk *parent = rgMemoryChunkParent(block, chunk);
+    if (parent)
+    {
+        rgMemoryChunkUpdateUsage(block, parent);
+    }
+}
+
 static inline RgMemoryChunk *rgMemoryChunkSplit(
     RgMemoryBlock *block,
     RgMemoryChunk *chunk,
@@ -948,6 +966,8 @@ static inline RgMemoryChunk *rgMemoryChunkSplit(
 
     const size_t chunk_size = rgMemoryChunkSize(block, chunk);
     const size_t chunk_offset = rgMemoryChunkOffset(block, chunk);
+
+    if ((chunk_size - chunk->used) < size) return NULL;
 
     RgMemoryChunk *left = rgMemoryChunkLeftChild(block, chunk);
     RgMemoryChunk *right = rgMemoryChunkRightChild(block, chunk);
@@ -1012,7 +1032,6 @@ static inline RgMemoryChunk *rgMemoryChunkSplit(
     return NULL;
 }
 
-// Frees the chunk, tries to join it back with parent recursively
 static inline void rgMemoryChunkJoin(RgMemoryBlock *block, RgMemoryChunk *chunk)
 {
     assert(chunk->split);
@@ -1062,6 +1081,8 @@ static VkResult rgMemoryBlockAllocate(
     assert(chunk->used == 0);
     chunk->used = size;
 
+    rgMemoryChunkUpdateUsage(block, chunk);
+
     size_t offset = rgMemoryChunkOffset(block, chunk);
 
     allocation->block = block;
@@ -1080,6 +1101,7 @@ static void rgMemoryBlockFree(
     RgMemoryChunk *chunk = &block->chunks[chunk_index];
 
     chunk->used = 0;
+    rgMemoryChunkUpdateUsage(block, chunk);
 
     RgMemoryChunk *parent = rgMemoryChunkParent(block, chunk);
     if (parent) rgMemoryChunkJoin(block, parent);
