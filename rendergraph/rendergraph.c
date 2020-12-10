@@ -43,7 +43,7 @@ enum {
     do                                                                                    \
     {                                                                                     \
         VkResult temp_result = result;                                                    \
-        if (temp_result != VK_SUCCESS)                                                    \
+        if (temp_result < 0)                                                              \
         {                                                                                 \
             fprintf(stderr, "%s:%u vulkan error: %d\n", __FILE__, __LINE__, temp_result); \
             exit(1);                                                                      \
@@ -263,14 +263,27 @@ typedef struct RgAllocationInfo
 {
     RgAllocationType type;
     VkMemoryRequirements requirements;
+    bool dedicated;
 } RgAllocationInfo;
 
 typedef struct RgAllocation
 {
     size_t size;
     size_t offset;
-    RgMemoryBlock *block;
-    size_t chunk_index;
+    bool dedicated;
+    union
+    {
+        struct
+        {
+            RgMemoryBlock *block;
+            size_t chunk_index;
+        };
+        struct
+        {
+            VkDeviceMemory dedicated_memory;
+            void *dedicated_mapping;
+        };
+    };
 } RgAllocation;
 
 struct RgDevice
@@ -450,6 +463,7 @@ typedef struct RgPassResource
 struct RgPass
 {
     RgGraph *graph;
+    uint32_t node_index;
     RgPassType type;
 
     bool is_backbuffer;
@@ -473,8 +487,6 @@ struct RgPass
     VkClearValue *clear_values; // array with length equal to num_attachments
 
     VkFramebuffer current_framebuffer;
-
-    RgPassCallback *callback;
 };
 
 struct RgGraph
@@ -830,7 +842,7 @@ static void rgResourceUsageToVk(
 
 // Device memory allocator {{{
 static int32_t
-rgFindMemoryProperties(
+rgFindMemoryProperties2(
         const VkPhysicalDeviceMemoryProperties* memory_properties,
         uint32_t memory_type_bits_requirement,
         VkMemoryPropertyFlags required_properties)
@@ -853,6 +865,73 @@ rgFindMemoryProperties(
 
     // failed to find memory type
     return -1;
+}
+
+static VkResult rgFindMemoryProperties(
+    RgAllocator *allocator,
+    const RgAllocationInfo *info,
+    int32_t *memory_type_index,
+    VkMemoryPropertyFlags *required_properties)
+{
+    switch (info->type)
+    {
+    case RG_ALLOCATION_TYPE_GPU_ONLY:
+        *required_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        break;
+    case RG_ALLOCATION_TYPE_CPU_TO_GPU:
+        *required_properties =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        break;
+    case RG_ALLOCATION_TYPE_GPU_TO_CPU:
+        *required_properties =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        break;
+    case RG_ALLOCATION_TYPE_UNKNOWN: break;
+    }
+
+    *memory_type_index = rgFindMemoryProperties2(
+        &allocator->device->physical_device_memory_properties,
+        info->requirements.memoryTypeBits,
+        *required_properties);
+
+    if (*memory_type_index == -1)
+    {
+        // We try again!
+
+        switch (info->type)
+        {
+        case RG_ALLOCATION_TYPE_GPU_ONLY:
+            *required_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            break;
+        case RG_ALLOCATION_TYPE_CPU_TO_GPU:
+            *required_properties =
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+        case RG_ALLOCATION_TYPE_GPU_TO_CPU:
+            *required_properties =
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+        case RG_ALLOCATION_TYPE_UNKNOWN: break;
+        }
+
+        *memory_type_index = rgFindMemoryProperties2(
+            &allocator->device->physical_device_memory_properties,
+            info->requirements.memoryTypeBits,
+            *required_properties);
+    }
+
+    if (*memory_type_index == -1)
+    {
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+
+    return VK_SUCCESS;
 }
 
 static inline RgMemoryChunk *rgMemoryChunkParent(
@@ -1116,65 +1195,9 @@ rgAllocatorCreateMemoryBlock(
     VkResult result = VK_SUCCESS;
 
     int32_t memory_type_index = -1;
-
-    VkMemoryPropertyFlagBits preferred_properties = 0;
-    switch (info->type)
-    {
-    case RG_ALLOCATION_TYPE_GPU_ONLY:
-        preferred_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        break;
-    case RG_ALLOCATION_TYPE_CPU_TO_GPU:
-        preferred_properties =
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-            | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        break;
-    case RG_ALLOCATION_TYPE_GPU_TO_CPU:
-        preferred_properties =
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-            | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-        break;
-    case RG_ALLOCATION_TYPE_UNKNOWN: break;
-    }
-
-    memory_type_index = rgFindMemoryProperties(
-        &allocator->device->physical_device_memory_properties,
-        info->requirements.memoryTypeBits,
-        preferred_properties);
-
-    if (memory_type_index == -1)
-    {
-        // We try again!
-
-        switch (info->type)
-        {
-        case RG_ALLOCATION_TYPE_GPU_ONLY:
-            preferred_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-            break;
-        case RG_ALLOCATION_TYPE_CPU_TO_GPU:
-            preferred_properties =
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            break;
-        case RG_ALLOCATION_TYPE_GPU_TO_CPU:
-            preferred_properties =
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            break;
-        case RG_ALLOCATION_TYPE_UNKNOWN: break;
-        }
-
-        memory_type_index = rgFindMemoryProperties(
-            &allocator->device->physical_device_memory_properties,
-            info->requirements.memoryTypeBits,
-            preferred_properties);
-    }
-
-    if (memory_type_index == -1)
-    {
-        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    }
+    VkMemoryPropertyFlagBits required_properties = 0;
+    result = rgFindMemoryProperties(allocator, info, &memory_type_index, &required_properties);
+    if (result != VK_SUCCESS) return result;
 
     assert(memory_type_index >= 0);
 
@@ -1182,7 +1205,7 @@ rgAllocatorCreateMemoryBlock(
     const uint64_t DEFAULT_HOST_MEMBLOCK_SIZE = 64 * 1024 * 1024;
 
     uint64_t memblock_size = 0;
-    if (preferred_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    if (required_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
     {
         memblock_size = DEFAULT_HOST_MEMBLOCK_SIZE;
     }
@@ -1222,7 +1245,7 @@ rgAllocatorCreateMemoryBlock(
 
     void *mapping = NULL;
 
-    if (preferred_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    if (required_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
     {
         result = vkMapMemory(
             allocator->device->device,
@@ -1300,6 +1323,62 @@ static VkResult rgAllocatorAllocate(
 {
     memset(allocation, 0, sizeof(*allocation));
 
+    if (info->dedicated)
+    {
+        printf("Dedicated allocation: %zu\n", info->requirements.size);
+
+        VkResult result = VK_SUCCESS;
+
+        int32_t memory_type_index = -1;
+        VkMemoryPropertyFlagBits required_properties = 0;
+        result = rgFindMemoryProperties(allocator, info, &memory_type_index, &required_properties);
+        if (result != VK_SUCCESS) return result;
+
+        assert(memory_type_index >= 0);
+
+        VkMemoryAllocateInfo vk_allocate_info;
+        memset(&vk_allocate_info, 0, sizeof(vk_allocate_info));
+        vk_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        vk_allocate_info.allocationSize = info->requirements.size;
+        vk_allocate_info.memoryTypeIndex = (uint32_t)memory_type_index;
+
+        VkDeviceMemory vk_memory = VK_NULL_HANDLE;
+        result = vkAllocateMemory(
+            allocator->device->device,
+            &vk_allocate_info,
+            NULL,
+            &vk_memory);
+
+        if (result != VK_SUCCESS) return result;
+
+        void *mapping = NULL;
+
+        if (required_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+        {
+            result = vkMapMemory(
+                allocator->device->device,
+                vk_memory,
+                0,
+                VK_WHOLE_SIZE,
+                0,
+                &mapping);
+
+            if (result != VK_SUCCESS)
+            {
+                vkFreeMemory(allocator->device->device, vk_memory, NULL);
+                return result;
+            }
+        }
+
+        allocation->dedicated = true;
+        allocation->dedicated_memory = vk_memory;
+        allocation->dedicated_mapping = mapping;
+        allocation->size = info->requirements.size;
+        allocation->offset = 0;
+
+        return result;
+    }
+
     for (int32_t i = ((int32_t)allocator->blocks.len)-1; i >= 0; --i)
     {
         RgMemoryBlock *block = allocator->blocks.ptr[i];
@@ -1340,13 +1419,38 @@ static VkResult rgAllocatorAllocate(
 
 static void rgAllocatorFree(RgAllocator *allocator, const RgAllocation *allocation)
 {
-    (void)allocator;
-    rgMemoryBlockFree(allocation->block, allocation);
+    if (allocation->dedicated)
+    {
+        printf("Freeing dedicated!\n");
+        VK_CHECK(vkDeviceWaitIdle(allocator->device->device));
+        if (allocation->dedicated_mapping)
+        {
+            vkUnmapMemory(
+                allocator->device->device,
+                allocation->dedicated_memory);
+        }
+        vkFreeMemory(allocator->device->device, allocation->dedicated_memory, NULL);
+    }
+    else
+    {
+        rgMemoryBlockFree(allocation->block, allocation);
+    }
 }
 
 static VkResult rgMapAllocation(RgAllocator *allocator, const RgAllocation *allocation, void **ppData)
 {
     (void)allocator;
+
+    if (allocation->dedicated)
+    {
+        if (allocation->dedicated_mapping)
+        {
+            *ppData = allocation->dedicated_mapping;
+            return VK_SUCCESS;
+        }
+
+        return VK_ERROR_MEMORY_MAP_FAILED;
+    }
 
     assert(allocation->block->mapping);
     if (allocation->block->mapping)
@@ -2035,7 +2139,7 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
 
         if (num_formats == 0)
         {
-            printf("Physical device does not support swapchain creation\n");
+            fprintf(stderr, "Physical device does not support swapchain creation\n");
             exit(1);
         }
 
@@ -2259,11 +2363,22 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
 
     VK_CHECK(rgAllocatorAllocate(device->allocator, &alloc_info, &buffer->allocation));
 
-    VK_CHECK(vkBindBufferMemory(
-        device->device,
-        buffer->buffer,
-        buffer->allocation.block->handle,
-        buffer->allocation.offset));
+    if (buffer->allocation.dedicated)
+    {
+        VK_CHECK(vkBindBufferMemory(
+            device->device,
+            buffer->buffer,
+            buffer->allocation.dedicated_memory,
+            buffer->allocation.offset));
+    }
+    else
+    {
+        VK_CHECK(vkBindBufferMemory(
+            device->device,
+            buffer->buffer,
+            buffer->allocation.block->handle,
+            buffer->allocation.offset));
+    }
 
     return buffer;
 }
@@ -2410,17 +2525,44 @@ RgImage *rgImageCreate(RgDevice *device, RgImageInfo *info)
 
         VK_CHECK(vkCreateImage(device->device, &ci, NULL, &image->image));
 
+        VkMemoryDedicatedRequirements dedicated_requirements = {0};
+        dedicated_requirements.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+
+        VkMemoryRequirements2 memory_requirements = {0};
+        memory_requirements.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+        memory_requirements.pNext = &dedicated_requirements;
+
+        VkImageMemoryRequirementsInfo2 image_requirements_info = {0};
+        image_requirements_info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+        image_requirements_info.image = image->image;
+
+        vkGetImageMemoryRequirements2(device->device, &image_requirements_info, &memory_requirements);
+
         RgAllocationInfo alloc_info = {0};
         alloc_info.type = RG_ALLOCATION_TYPE_GPU_ONLY;
-        vkGetImageMemoryRequirements(device->device, image->image, &alloc_info.requirements);
+        alloc_info.requirements = memory_requirements.memoryRequirements;
+        alloc_info.dedicated = dedicated_requirements.prefersDedicatedAllocation ||
+            dedicated_requirements.requiresDedicatedAllocation;
+        alloc_info.dedicated = true;
 
         VK_CHECK(rgAllocatorAllocate(device->allocator, &alloc_info, &image->allocation));
 
-        VK_CHECK(vkBindImageMemory(
-                     device->device,
-                     image->image,
-                     image->allocation.block->handle,
-                     image->allocation.offset));
+        if (image->allocation.dedicated)
+        {
+            VK_CHECK(vkBindImageMemory(
+                        device->device,
+                        image->image,
+                        image->allocation.dedicated_memory,
+                        image->allocation.offset));
+        }
+        else
+        {
+            VK_CHECK(vkBindImageMemory(
+                        device->device,
+                        image->image,
+                        image->allocation.block->handle,
+                        image->allocation.offset));
+        }
     }
 
     {
@@ -4727,7 +4869,7 @@ RgGraph *rgGraphCreate(void)
     return graph;
 }
 
-RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType type, RgPassCallback *callback)
+RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType type)
 {
     RgPassRef ref;
     ref.index = graph->passes.len;
@@ -4736,7 +4878,6 @@ RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType type, RgPassCallback *callba
     memset(&pass, 0, sizeof(pass));
 
     pass.graph = graph;
-    pass.callback = callback;
     pass.type = type;
 
     arrPush(&graph->passes, pass);
@@ -4959,6 +5100,16 @@ void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraph
         rgNodeInit(graph, &graph->nodes.ptr[i], pass_indices, num_passes);
     }
 
+    for (uint32_t i = 0; i < graph->nodes.len; ++i)
+    {
+        RgNode *node = &graph->nodes.ptr[i];
+        for (uint32_t j = 0; j < node->num_pass_indices; ++j)
+        {
+            RgPass *pass = &graph->passes.ptr[node->pass_indices[j]];
+            pass->node_index = i;
+        }
+    }
+
     for (uint32_t i = 0; i < graph->passes.len; ++i)
     {
         if (i == (graph->passes.len - 1) && graph->has_swapchain)
@@ -5034,8 +5185,57 @@ void rgGraphDestroy(RgGraph *graph)
     free(graph);
 }
 
-static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
+RgCmdBuffer *rgGraphPassBegin(RgGraph *graph, RgPassRef pass_ref)
 {
+    RgPass *pass = &graph->passes.ptr[pass_ref.index];
+    RgNode *node = &graph->nodes.ptr[pass->node_index];
+
+    uint32_t current_frame = graph->current_frame;
+    RgCmdBuffer *cmd_buffer = &node->frames[current_frame].cmd_buffer;
+
+    uint32_t first_pass_index = node->pass_indices[0];
+
+    // If the pass is the first in the node, we need to begin
+    // the command buffer.
+    if (pass_ref.index == first_pass_index)
+    {
+        // Last node has to acquire swapchain image
+        if (pass->node_index == (graph->nodes.len - 1) && graph->has_swapchain)
+        {
+            VK_CHECK(vkWaitForFences(
+                graph->device->device,
+                1,
+                &node->frames[current_frame].fence,
+                VK_TRUE,
+                1 * 1000000000ULL));
+
+            VkResult res = vkAcquireNextImageKHR(
+                graph->device->device,
+                graph->swapchain.swapchain,
+                1000000000ULL,
+                graph->image_available_semaphores[current_frame],
+                VK_NULL_HANDLE,
+                &graph->swapchain.current_image_index);
+
+            /* if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)) */
+            /* { */
+            /*     VK_CHECK(res); */
+            /* } */
+            VK_CHECK(res);
+        }
+
+        // Begin command buffer
+
+        VK_CHECK(
+            vkResetFences(graph->device->device, 1, &node->frames[current_frame].fence));
+
+        VkCommandBufferBeginInfo begin_info;
+        memset(&begin_info, 0, sizeof(begin_info));
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(cmd_buffer->cmd_buffer, &begin_info));
+    }
+
     //
     // Apply some barriers
     //
@@ -5204,71 +5404,29 @@ static void rgPassExecute(RgGraph *graph, RgCmdBuffer *cmd_buffer, RgPass *pass)
         vkCmdSetScissor(cmd_buffer->cmd_buffer, 0, 1, &scissor);
     }
 
-    if (pass->callback)
-    {
-        pass->callback(graph->user_data, cmd_buffer);
-    }
+    return cmd_buffer;
+}
+
+void rgGraphPassEnd(RgGraph *graph, RgPassRef pass_ref)
+{
+    RgPass *pass = &graph->passes.ptr[pass_ref.index];
+    RgNode *node = &graph->nodes.ptr[pass->node_index];
+
+    uint32_t current_frame = graph->current_frame;
+    RgCmdBuffer *cmd_buffer = &node->frames[current_frame].cmd_buffer;
 
     if (pass->type == RG_PASS_TYPE_GRAPHICS)
     {
         vkCmdEndRenderPass(cmd_buffer->cmd_buffer);
     }
     cmd_buffer->current_pass = NULL;
-}
 
-void rgGraphExecute(RgGraph *graph)
-{
-    assert(graph->built);
-    uint32_t current_frame = graph->current_frame;
-
-    for (uint32_t i = 0; i < graph->nodes.len; ++i)
+    uint32_t last_pass_index = node->pass_indices[node->num_pass_indices-1];
+    
+    // If the pass is the last in the node, we need to
+    // end the command buffer and submit
+    if (pass_ref.index == last_pass_index)
     {
-        RgNode *node = &graph->nodes.ptr[i];
-
-        if (i == (graph->nodes.len - 1) && graph->has_swapchain)
-        {
-            // Last node has to acquire swapchain image
-
-            VK_CHECK(vkWaitForFences(
-                graph->device->device,
-                1,
-                &node->frames[current_frame].fence,
-                VK_TRUE,
-                1 * 1000000000ULL));
-
-            VkResult res = vkAcquireNextImageKHR(
-                graph->device->device,
-                graph->swapchain.swapchain,
-                1000000000ULL,
-                graph->image_available_semaphores[current_frame],
-                VK_NULL_HANDLE,
-                &graph->swapchain.current_image_index);
-
-            if (res == VK_ERROR_OUT_OF_DATE_KHR)
-            {
-                return;
-            }
-
-            VK_CHECK(res);
-        }
-
-        VK_CHECK(
-            vkResetFences(graph->device->device, 1, &node->frames[current_frame].fence));
-
-        RgCmdBuffer *cmd_buffer = &node->frames[current_frame].cmd_buffer;
-
-        VkCommandBufferBeginInfo begin_info;
-        memset(&begin_info, 0, sizeof(begin_info));
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        VK_CHECK(vkBeginCommandBuffer(cmd_buffer->cmd_buffer, &begin_info));
-
-        for (uint32_t j = 0; j < node->num_pass_indices; ++j)
-        {
-            RgPass *pass = &graph->passes.ptr[node->pass_indices[j]];
-            rgPassExecute(graph, cmd_buffer, pass);
-        }
-
         rgBufferPoolReset(&cmd_buffer->ubo_pool);
         rgBufferPoolReset(&cmd_buffer->vbo_pool);
         rgBufferPoolReset(&cmd_buffer->ibo_pool);
@@ -5283,7 +5441,7 @@ void rgGraphExecute(RgGraph *graph)
         submit.pWaitDstStageMask = node->frames[current_frame].wait_stages;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd_buffer->cmd_buffer;
-        if (i == (graph->nodes.len - 1) && graph->has_swapchain)
+        if (pass->node_index == (graph->nodes.len - 1) && graph->has_swapchain)
         {
             uint32_t num_signal_semaphores = 1;
             VkSemaphore *signal_semaphores =
@@ -5298,32 +5456,36 @@ void rgGraphExecute(RgGraph *graph)
             1,
             &submit,
             node->frames[current_frame].fence));
-    }
 
-    if (graph->has_swapchain)
-    {
-        RgNode *last_node = &graph->nodes.ptr[graph->nodes.len - 1];
-
-        VkPresentInfoKHR present_info;
-        memset(&present_info, 0, sizeof(present_info));
-        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores =
-            &last_node->frames[current_frame].execution_finished_semaphore;
-        present_info.swapchainCount = 1;
-        present_info.pSwapchains = &graph->swapchain.swapchain;
-        present_info.pImageIndices = &graph->swapchain.current_image_index;
-
-        assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
-
-        VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
-        if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR))
+        if (pass->node_index == (graph->nodes.len - 1))
         {
-            VK_CHECK(res);
+            // Last node has to present the swapchain image
+            if (graph->has_swapchain)
+            {
+                VkPresentInfoKHR present_info;
+                memset(&present_info, 0, sizeof(present_info));
+                present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+                present_info.waitSemaphoreCount = 1;
+                present_info.pWaitSemaphores =
+                    &node->frames[current_frame].execution_finished_semaphore;
+                present_info.swapchainCount = 1;
+                present_info.pSwapchains = &graph->swapchain.swapchain;
+                present_info.pImageIndices = &graph->swapchain.current_image_index;
+
+                assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
+
+                VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
+                VK_CHECK(res);
+                /* if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)) */
+                /* { */
+                /*     VK_CHECK(res); */
+                /* } */
+            }
+
+            // Last pass in the last node has to increment the frame index
+            graph->current_frame = (graph->current_frame + 1) % graph->num_frames;
         }
     }
-
-    graph->current_frame = (graph->current_frame + 1) % graph->num_frames;
 }
 
 void rgGraphWaitAll(RgGraph *graph)

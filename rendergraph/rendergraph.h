@@ -20,7 +20,6 @@ typedef struct RgCmdBuffer RgCmdBuffer;
 typedef struct RgCmdPool RgCmdPool;
 typedef struct RgGraph RgGraph;
 typedef uint32_t RgFlags;
-typedef void(RgPassCallback)(void*, RgCmdBuffer*);
 
 typedef enum RgFormat
 {
@@ -449,7 +448,7 @@ RgPipeline *rgComputePipelineCreate(RgDevice *device, RgComputePipelineInfo *inf
 void rgPipelineDestroy(RgDevice *device, RgPipeline *pipeline);
 
 RgGraph *rgGraphCreate(void);
-RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType pass_type, RgPassCallback *callback);
+RgPassRef rgGraphAddPass(RgGraph *graph, RgPassType pass_type);
 RgResourceRef rgGraphAddImage(RgGraph *graph, RgGraphImageInfo *info);
 RgResourceRef rgGraphAddBuffer(RgGraph *graph, RgBufferInfo *info);
 RgResourceRef rgGraphAddExternalImage(RgGraph *graph, RgImage *image);
@@ -458,7 +457,8 @@ void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resour
 void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraphInfo *info);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph, uint32_t width, uint32_t height);
-void rgGraphExecute(RgGraph *graph);
+RgCmdBuffer *rgGraphPassBegin(RgGraph *graph, RgPassRef pass);
+void rgGraphPassEnd(RgGraph *graph, RgPassRef pass);
 void rgGraphWaitAll(RgGraph *graph);
 RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource);
 RgImage *rgGraphGetImage(RgGraph *graph, RgResourceRef resource);
