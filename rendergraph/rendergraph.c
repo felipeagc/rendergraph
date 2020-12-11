@@ -1325,8 +1325,6 @@ static VkResult rgAllocatorAllocate(
 
     if (info->dedicated)
     {
-        printf("Dedicated allocation: %zu\n", info->requirements.size);
-
         VkResult result = VK_SUCCESS;
 
         int32_t memory_type_index = -1;
@@ -1421,7 +1419,6 @@ static void rgAllocatorFree(RgAllocator *allocator, const RgAllocation *allocati
 {
     if (allocation->dedicated)
     {
-        printf("Freeing dedicated!\n");
         VK_CHECK(vkDeviceWaitIdle(allocator->device->device));
         if (allocation->dedicated_mapping)
         {
@@ -5185,7 +5182,69 @@ void rgGraphDestroy(RgGraph *graph)
     free(graph);
 }
 
-RgCmdBuffer *rgGraphPassBegin(RgGraph *graph, RgPassRef pass_ref)
+RgResult rgGraphBeginFrame(RgGraph *graph)
+{
+    if (!graph->has_swapchain) return RG_SUCCESS;
+
+    RgNode *last_node = &graph->nodes.ptr[graph->nodes.len-1];
+
+    VK_CHECK(vkWaitForFences(
+        graph->device->device,
+        1,
+        &last_node->frames[graph->current_frame].fence,
+        VK_TRUE,
+        1 * 1000000000ULL));
+
+    VkResult res = vkAcquireNextImageKHR(
+        graph->device->device,
+        graph->swapchain.swapchain,
+        1000000000ULL,
+        graph->image_available_semaphores[graph->current_frame],
+        VK_NULL_HANDLE,
+        &graph->swapchain.current_image_index);
+
+    if (res == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        return RG_RESIZE_NEEDED;
+    }
+    else
+    {
+        VK_CHECK(res);
+    }
+
+    return RG_SUCCESS;
+}
+
+void rgGraphEndFrame(RgGraph *graph)
+{
+    if (!graph->has_swapchain) return;
+
+    RgNode *last_node = &graph->nodes.ptr[graph->nodes.len-1];
+
+    // Last node has to present the swapchain image
+    VkPresentInfoKHR present_info;
+    memset(&present_info, 0, sizeof(present_info));
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores =
+        &last_node->frames[graph->current_frame].execution_finished_semaphore;
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &graph->swapchain.swapchain;
+    present_info.pImageIndices = &graph->swapchain.current_image_index;
+
+    assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
+
+    // Increment the frame index
+    graph->current_frame = (graph->current_frame + 1) % graph->num_frames;
+
+    VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
+    if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR))
+    {
+        VK_CHECK(res);
+    }
+}
+
+RgCmdBuffer *rgGraphBeginPass(RgGraph *graph, RgPassRef pass_ref)
 {
     RgPass *pass = &graph->passes.ptr[pass_ref.index];
     RgNode *node = &graph->nodes.ptr[pass->node_index];
@@ -5199,31 +5258,6 @@ RgCmdBuffer *rgGraphPassBegin(RgGraph *graph, RgPassRef pass_ref)
     // the command buffer.
     if (pass_ref.index == first_pass_index)
     {
-        // Last node has to acquire swapchain image
-        if (pass->node_index == (graph->nodes.len - 1) && graph->has_swapchain)
-        {
-            VK_CHECK(vkWaitForFences(
-                graph->device->device,
-                1,
-                &node->frames[current_frame].fence,
-                VK_TRUE,
-                1 * 1000000000ULL));
-
-            VkResult res = vkAcquireNextImageKHR(
-                graph->device->device,
-                graph->swapchain.swapchain,
-                1000000000ULL,
-                graph->image_available_semaphores[current_frame],
-                VK_NULL_HANDLE,
-                &graph->swapchain.current_image_index);
-
-            /* if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)) */
-            /* { */
-            /*     VK_CHECK(res); */
-            /* } */
-            VK_CHECK(res);
-        }
-
         // Begin command buffer
 
         VK_CHECK(
@@ -5407,7 +5441,7 @@ RgCmdBuffer *rgGraphPassBegin(RgGraph *graph, RgPassRef pass_ref)
     return cmd_buffer;
 }
 
-void rgGraphPassEnd(RgGraph *graph, RgPassRef pass_ref)
+void rgGraphEndPass(RgGraph *graph, RgPassRef pass_ref)
 {
     RgPass *pass = &graph->passes.ptr[pass_ref.index];
     RgNode *node = &graph->nodes.ptr[pass->node_index];
@@ -5456,35 +5490,6 @@ void rgGraphPassEnd(RgGraph *graph, RgPassRef pass_ref)
             1,
             &submit,
             node->frames[current_frame].fence));
-
-        if (pass->node_index == (graph->nodes.len - 1))
-        {
-            // Last node has to present the swapchain image
-            if (graph->has_swapchain)
-            {
-                VkPresentInfoKHR present_info;
-                memset(&present_info, 0, sizeof(present_info));
-                present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-                present_info.waitSemaphoreCount = 1;
-                present_info.pWaitSemaphores =
-                    &node->frames[current_frame].execution_finished_semaphore;
-                present_info.swapchainCount = 1;
-                present_info.pSwapchains = &graph->swapchain.swapchain;
-                present_info.pImageIndices = &graph->swapchain.current_image_index;
-
-                assert(graph->swapchain.swapchain != VK_NULL_HANDLE);
-
-                VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
-                VK_CHECK(res);
-                /* if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)) */
-                /* { */
-                /*     VK_CHECK(res); */
-                /* } */
-            }
-
-            // Last pass in the last node has to increment the frame index
-            graph->current_frame = (graph->current_frame + 1) % graph->num_frames;
-        }
     }
 }
 

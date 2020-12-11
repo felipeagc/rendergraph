@@ -21,6 +21,12 @@ typedef struct RgCmdPool RgCmdPool;
 typedef struct RgGraph RgGraph;
 typedef uint32_t RgFlags;
 
+typedef enum RgResult
+{
+    RG_SUCCESS = 0,
+    RG_RESIZE_NEEDED = 1,
+} RgResult;
+
 typedef enum RgFormat
 {
     RG_FORMAT_UNDEFINED = 0,
@@ -457,8 +463,10 @@ void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resour
 void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraphInfo *info);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph, uint32_t width, uint32_t height);
-RgCmdBuffer *rgGraphPassBegin(RgGraph *graph, RgPassRef pass);
-void rgGraphPassEnd(RgGraph *graph, RgPassRef pass);
+RgResult rgGraphBeginFrame(RgGraph *graph);
+void rgGraphEndFrame(RgGraph *graph);
+RgCmdBuffer *rgGraphBeginPass(RgGraph *graph, RgPassRef pass);
+void rgGraphEndPass(RgGraph *graph, RgPassRef pass);
 void rgGraphWaitAll(RgGraph *graph);
 RgBuffer *rgGraphGetBuffer(RgGraph *graph, RgResourceRef resource);
 RgImage *rgGraphGetImage(RgGraph *graph, RgResourceRef resource);
