@@ -2358,6 +2358,7 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
         break;
     }
 
+    alloc_info.dedicated = true;
     VK_CHECK(rgAllocatorAllocate(device->allocator, &alloc_info, &buffer->allocation));
 
     if (buffer->allocation.dedicated)
@@ -2459,7 +2460,7 @@ void rgBufferUpload(
 
     VK_CHECK(vkQueueSubmit(device->graphics_queue, 1, &submit, fence));
 
-    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
+    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, UINT64_MAX));
     vkDestroyFence(device->device, fence, NULL);
 
     vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
@@ -2738,7 +2739,7 @@ void rgImageUpload(
 
     VK_CHECK(vkQueueSubmit(device->graphics_queue, 1, &submit, fence));
 
-    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
+    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, UINT64_MAX));
     vkDestroyFence(device->device, fence, NULL);
 
     vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
@@ -2815,7 +2816,7 @@ void rgImageBarrier(
 
     VK_CHECK(vkQueueSubmit(device->graphics_queue, 1, &submit, fence));
 
-    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
+    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, UINT64_MAX));
     vkDestroyFence(device->device, fence, NULL);
 
     vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
@@ -2957,7 +2958,7 @@ void rgImageGenerateMipMaps(RgDevice *device, RgCmdPool *cmd_pool, RgImage *imag
 
     VK_CHECK(vkQueueSubmit(device->graphics_queue, 1, &submit, fence));
 
-    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, 1 * 1000000000ULL));
+    VK_CHECK(vkWaitForFences(device->device, 1, &fence, VK_TRUE, UINT64_MAX));
     vkDestroyFence(device->device, fence, NULL);
 
     vkFreeCommandBuffers(device->device, cmd_pool->command_pool, 1, &cmd_buffer);
@@ -4450,12 +4451,46 @@ static uint64_t rgRenderpassHash(VkRenderPassCreateInfo *ci)
             (uint8_t *)&subpass->pipelineBindPoint,
             sizeof(subpass->pipelineBindPoint));
 
+        fnvHashUpdate(&hash, (uint8_t *)&subpass->flags, sizeof(subpass->flags));
+
         if (subpass->pColorAttachments)
         {
             fnvHashUpdate(
                 &hash,
                 (uint8_t *)subpass->pColorAttachments,
                 subpass->colorAttachmentCount * sizeof(*subpass->pColorAttachments));
+        }
+
+        if (subpass->pResolveAttachments)
+        {
+            fnvHashUpdate(
+                &hash,
+                (uint8_t *)subpass->pResolveAttachments,
+                subpass->colorAttachmentCount * sizeof(*subpass->pResolveAttachments));
+        }
+
+        if (subpass->pDepthStencilAttachment)
+        {
+            fnvHashUpdate(
+                &hash,
+                (uint8_t *)subpass->pDepthStencilAttachment,
+                sizeof(*subpass->pDepthStencilAttachment));
+        }
+
+        if (subpass->pInputAttachments)
+        {
+            fnvHashUpdate(
+                &hash,
+                (uint8_t *)subpass->pInputAttachments,
+                subpass->inputAttachmentCount * sizeof(*subpass->pInputAttachments));
+        }
+
+        if (subpass->pPreserveAttachments)
+        {
+            fnvHashUpdate(
+                &hash,
+                (uint8_t *)subpass->pPreserveAttachments,
+                subpass->preserveAttachmentCount * sizeof(*subpass->pPreserveAttachments));
         }
     }
 
@@ -4685,6 +4720,7 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         graph->device->device, &renderpass_ci, NULL, &pass->renderpass));
 
     pass->hash = rgRenderpassHash(&renderpass_ci);
+    printf("Render pass hash: %lu\n", pass->hash);
 
     assert(graph->num_frames > 0);
     for (uint32_t f = 0; f < graph->num_frames; ++f)
@@ -4699,9 +4735,9 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
                 arrPush(&views, graph->swapchain.image_views[i]);
             }
 
-            for (uint32_t i = 0; i < pass->used_resources.len; ++i)
+            for (uint32_t j = 0; j < pass->used_resources.len; ++j)
             {
-                RgPassResource pass_res = pass->used_resources.ptr[i];
+                RgPassResource pass_res = pass->used_resources.ptr[j];
                 RgResource *resource = &graph->resources.ptr[pass_res.index];
 
                 switch (pass_res.post_usage)
@@ -5116,7 +5152,7 @@ void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraph
         rgPassBuild(graph, &graph->passes.ptr[i]);
     }
 
-    rgGraphResize(graph, 0, 0);
+    rgGraphResize(graph, info->width, info->height);
 
     graph->built = true;
 }
@@ -5193,12 +5229,12 @@ RgResult rgGraphBeginFrame(RgGraph *graph)
         1,
         &last_node->frames[graph->current_frame].fence,
         VK_TRUE,
-        1 * 1000000000ULL));
+        UINT64_MAX));
 
     VkResult res = vkAcquireNextImageKHR(
         graph->device->device,
         graph->swapchain.swapchain,
-        1000000000ULL,
+        UINT64_MAX,
         graph->image_available_semaphores[graph->current_frame],
         VK_NULL_HANDLE,
         &graph->swapchain.current_image_index);
@@ -5387,13 +5423,17 @@ RgCmdBuffer *rgGraphBeginPass(RgGraph *graph, RgPassRef pass_ref)
         if (pass->is_backbuffer)
         {
             assert(graph->has_swapchain);
+            assert(pass->num_framebuffers == graph->swapchain.num_images);
+
             pass->current_framebuffer = pass->frames[graph->current_frame]
                 .framebuffers[graph->swapchain.current_image_index];
         }
         else
         {
-            pass->current_framebuffer = pass->frames[graph->current_frame]
-                .framebuffers[0];
+            assert(pass->num_framebuffers == 1);
+
+            pass->current_framebuffer =
+                pass->frames[graph->current_frame].framebuffers[0];
         }
 
         memset(pass->clear_values, 0, sizeof(VkClearValue) * pass->num_attachments);
