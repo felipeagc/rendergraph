@@ -463,8 +463,8 @@ void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass, RgResourceRef resour
 void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraphInfo *info);
 void rgGraphDestroy(RgGraph *graph);
 void rgGraphResize(RgGraph *graph, uint32_t width, uint32_t height);
-RgResult rgGraphBeginFrame(RgGraph *graph);
-void rgGraphEndFrame(RgGraph *graph);
+RgResult rgGraphBeginFrame(RgGraph *graph, uint32_t width, uint32_t height);
+void rgGraphEndFrame(RgGraph *graph, uint32_t width, uint32_t height);
 RgCmdBuffer *rgGraphBeginPass(RgGraph *graph, RgPassRef pass);
 void rgGraphEndPass(RgGraph *graph, RgPassRef pass);
 void rgGraphWaitAll(RgGraph *graph);

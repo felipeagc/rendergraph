@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #ifdef RENDERGRAPH_FEATURE_VULKAN
 
@@ -871,7 +872,7 @@ static VkResult rgFindMemoryProperties(
     RgAllocator *allocator,
     const RgAllocationInfo *info,
     int32_t *memory_type_index,
-    VkMemoryPropertyFlags *required_properties)
+    VkMemoryPropertyFlagBits *required_properties)
 {
     switch (info->type)
     {
@@ -2186,6 +2187,12 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
 
         for (uint32_t i = 0; i < num_present_modes; ++i)
         {
+            if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+                present_mode = present_modes[i];
+        }
+
+        for (uint32_t i = 0; i < num_present_modes; ++i)
+        {
             if (present_modes[i] == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
                 present_mode = present_modes[i];
         }
@@ -2193,12 +2200,6 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
         for (uint32_t i = 0; i < num_present_modes; ++i)
         {
             if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
-                present_mode = present_modes[i];
-        }
-
-        for (uint32_t i = 0; i < num_present_modes; ++i)
-        {
-            if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
                 present_mode = present_modes[i];
         }
 
@@ -2210,13 +2211,6 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
     height = RG_CLAMP(
         height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
     swapchain->extent = (VkExtent2D){width, height};
-
-    swapchain->num_images = capabilities.minImageCount + 1;
-    if (capabilities.maxImageCount > 0 &&
-        swapchain->num_images > capabilities.maxImageCount)
-    {
-        swapchain->num_images = capabilities.maxImageCount;
-    }
 
     VkImageUsageFlags image_usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -2233,7 +2227,7 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
     memset(&create_info, 0, sizeof(create_info));
     create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     create_info.surface = swapchain->surface;
-    create_info.minImageCount = swapchain->num_images;
+    create_info.minImageCount = RG_CLAMP(2, capabilities.minImageCount, capabilities.maxImageCount);
     create_info.imageFormat = surface_format.format;
     create_info.imageColorSpace = surface_format.colorSpace;
     create_info.imageExtent = swapchain->extent;
@@ -2242,7 +2236,8 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
 
     uint32_t queue_family_indices[2] = {
         swapchain->device->queue_family_indices.graphics,
-        swapchain->present_family_index};
+        swapchain->present_family_index,
+    };
 
     if (swapchain->device->queue_family_indices.graphics !=
         swapchain->present_family_index)
@@ -4345,8 +4340,8 @@ static void rgResourceResolveImageInfo(
     }
     }
 
-    assert(out_info->width > 0);
-    assert(out_info->height > 0);
+    assert(out_info->width >= 0);
+    assert(out_info->height >= 0);
 }
 
 static void
@@ -4685,6 +4680,11 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         subpass.pDepthStencilAttachment = &depth_stencil_attachment_ref;
     }
 
+    RgNode *node = &graph->nodes.ptr[pass->node_index];
+    uint32_t last_pass_in_node_index = node->pass_indices[node->num_pass_indices-1];
+    RgPass *last_pass_in_node = &graph->passes.ptr[last_pass_in_node_index];
+    bool is_last_pass_in_node = last_pass_in_node == pass;
+
     VkSubpassDependency dependencies[2];
     memset(dependencies, 0, sizeof(dependencies));
 
@@ -4692,19 +4692,35 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     dependencies[0].dstSubpass = 0;
     dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
     dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
-        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
     dependencies[1].srcSubpass = 0;
     dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
-        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    if (is_last_pass_in_node)
+    {
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+            | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+            | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    }
+    else
+    {
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
 
     VkRenderPassCreateInfo renderpass_ci;
     memset(&renderpass_ci, 0, sizeof(renderpass_ci));
@@ -5070,7 +5086,12 @@ static void ensureResourceUsage(RgResource *res, RgResourceUsage usage)
     }
 }
 
-void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass_ref, RgResourceRef resource_ref, RgResourceUsage pre_usage, RgResourceUsage post_usage)
+void rgGraphPassUseResource(
+    RgGraph *graph,
+    RgPassRef pass_ref,
+    RgResourceRef resource_ref,
+    RgResourceUsage pre_usage,
+    RgResourceUsage post_usage)
 {
     RgPass *pass = &graph->passes.ptr[pass_ref.index];
     RgResource *res = &graph->resources.ptr[resource_ref.index];
@@ -5085,7 +5106,11 @@ void rgGraphPassUseResource(RgGraph *graph, RgPassRef pass_ref, RgResourceRef re
     arrPush(&pass->used_resources, pass_res);
 }
 
-void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraphInfo *info)
+void rgGraphBuild(
+    RgGraph *graph,
+    RgDevice *device,
+    RgCmdPool *cmd_pool,
+    RgGraphInfo *info)
 {
     graph->device = device;
     graph->user_data = info->user_data;
@@ -5140,15 +5165,18 @@ void rgGraphBuild(RgGraph *graph, RgDevice *device, RgCmdPool *cmd_pool, RgGraph
         {
             RgPass *pass = &graph->passes.ptr[node->pass_indices[j]];
             pass->node_index = i;
+
+            if (i == (graph->nodes.len - 1) &&
+                node->pass_indices[j] == (graph->passes.len - 1) &&
+                graph->has_swapchain)
+            {
+                pass->is_backbuffer = true;
+            }
         }
     }
 
     for (uint32_t i = 0; i < graph->passes.len; ++i)
     {
-        if (i == (graph->passes.len - 1) && graph->has_swapchain)
-        {
-            graph->passes.ptr[i].is_backbuffer = true;
-        }
         rgPassBuild(graph, &graph->passes.ptr[i]);
     }
 
@@ -5218,7 +5246,7 @@ void rgGraphDestroy(RgGraph *graph)
     free(graph);
 }
 
-RgResult rgGraphBeginFrame(RgGraph *graph)
+RgResult rgGraphBeginFrame(RgGraph *graph, uint32_t width, uint32_t height)
 {
     if (!graph->has_swapchain) return RG_SUCCESS;
 
@@ -5238,10 +5266,9 @@ RgResult rgGraphBeginFrame(RgGraph *graph)
         graph->image_available_semaphores[graph->current_frame],
         VK_NULL_HANDLE,
         &graph->swapchain.current_image_index);
-
-    if (res == VK_ERROR_OUT_OF_DATE_KHR)
+    if ((res == VK_ERROR_OUT_OF_DATE_KHR) || (res == VK_SUBOPTIMAL_KHR))
     {
-        return RG_RESIZE_NEEDED;
+        rgGraphResize(graph, width, height);
     }
     else
     {
@@ -5251,7 +5278,7 @@ RgResult rgGraphBeginFrame(RgGraph *graph)
     return RG_SUCCESS;
 }
 
-void rgGraphEndFrame(RgGraph *graph)
+void rgGraphEndFrame(RgGraph *graph, uint32_t width, uint32_t height)
 {
     if (!graph->has_swapchain) return;
 
@@ -5274,9 +5301,16 @@ void rgGraphEndFrame(RgGraph *graph)
     graph->current_frame = (graph->current_frame + 1) % graph->num_frames;
 
     VkResult res = vkQueuePresentKHR(graph->swapchain.present_queue, &present_info);
-    if (!(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR))
+    if (!((res == VK_SUCCESS) || (res == VK_SUBOPTIMAL_KHR)))
     {
-        VK_CHECK(res);
+        if (res == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            rgGraphResize(graph, width, height);
+        }
+        else
+        {
+            VK_CHECK(res);
+        }
     }
 }
 
@@ -5402,17 +5436,20 @@ RgCmdBuffer *rgGraphBeginPass(RgGraph *graph, RgPassRef pass_ref)
         }
     }
 
-    vkCmdPipelineBarrier(
-        cmd_buffer->cmd_buffer,
-        src_stage_mask,
-        dst_stage_mask,
-        0,
-        0,
-        NULL,
-        (uint32_t)graph->buffer_barriers.len,
-        graph->buffer_barriers.ptr,
-        (uint32_t)graph->image_barriers.len,
-        graph->image_barriers.ptr);
+    if (graph->buffer_barriers.len > 0 || graph->image_barriers.len > 0)
+    {
+        vkCmdPipelineBarrier(
+            cmd_buffer->cmd_buffer,
+            src_stage_mask,
+            dst_stage_mask,
+            0,
+            0,
+            NULL,
+            (uint32_t)graph->buffer_barriers.len,
+            graph->buffer_barriers.ptr,
+            (uint32_t)graph->image_barriers.len,
+            graph->image_barriers.ptr);
+    }
 
     //
     // Begin render pass (if applicable)
@@ -5454,6 +5491,8 @@ RgCmdBuffer *rgGraphBeginPass(RgGraph *graph, RgPassRef pass_ref)
         render_pass_info.renderArea.extent = pass->extent;
         render_pass_info.clearValueCount = pass->num_attachments;
         render_pass_info.pClearValues = pass->clear_values;
+        assert(pass->extent.width > 0);
+        assert(pass->extent.height > 0);
 
         cmd_buffer->current_pass = pass;
         vkCmdBeginRenderPass(
@@ -5515,7 +5554,7 @@ void rgGraphEndPass(RgGraph *graph, RgPassRef pass_ref)
         submit.pWaitDstStageMask = node->frames[current_frame].wait_stages;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd_buffer->cmd_buffer;
-        if (pass->node_index == (graph->nodes.len - 1) && graph->has_swapchain)
+        if (pass->is_backbuffer)
         {
             uint32_t num_signal_semaphores = 1;
             VkSemaphore *signal_semaphores =
