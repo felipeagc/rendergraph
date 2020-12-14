@@ -517,12 +517,11 @@ struct RgNode
 {
     struct
     {
-        RgCmdBuffer cmd_buffer;
+        RgCmdBuffer *cmd_buffer;
         VkSemaphore execution_finished_semaphore;
 
-        uint32_t num_wait_semaphores;
-        VkSemaphore *wait_semaphores;
-        VkPipelineStageFlags *wait_stages;
+        ARRAY_OF(VkSemaphore) wait_semaphores;
+        ARRAY_OF(VkPipelineStageFlags) wait_stages;
 
         VkFence fence;
     } frames[RG_FRAMES_IN_FLIGHT];
@@ -3339,11 +3338,15 @@ RgPipeline *rgGraphicsPipelineCreate(RgDevice *device, RgGraphicsPipelineInfo *i
 
     if (info->vertex_entry)
     {
-        pipeline->graphics.vertex_entry = strdup(info->vertex_entry);
+        size_t str_size = strlen(info->vertex_entry) + 1;
+        pipeline->graphics.vertex_entry = malloc(str_size);
+        memcpy(pipeline->graphics.vertex_entry, info->vertex_entry, str_size);
     }
     if (info->fragment_entry)
     {
-        pipeline->graphics.fragment_entry = strdup(info->fragment_entry);
+        size_t str_size = strlen(info->fragment_entry) + 1;
+        pipeline->graphics.fragment_entry = malloc(str_size);
+        memcpy(pipeline->graphics.fragment_entry, info->fragment_entry, str_size);
     }
 
     // Bindings
@@ -3861,8 +3864,9 @@ static VkPipeline rgGraphicsPipelineGetInstance(
 // }}}
 
 // Command buffer {{{
-static void allocateCmdBuffer(RgDevice *device, RgCmdPool *cmd_pool, RgCmdBuffer *cmd_buffer)
+static RgCmdBuffer *allocateCmdBuffer(RgDevice *device, RgCmdPool *cmd_pool)
 {
+    RgCmdBuffer *cmd_buffer = malloc(sizeof(*cmd_buffer));
     memset(cmd_buffer, 0, sizeof(*cmd_buffer));
 
     cmd_buffer->device = device;
@@ -3901,6 +3905,8 @@ static void allocateCmdBuffer(RgDevice *device, RgCmdPool *cmd_pool, RgCmdBuffer
         RG_BUFFER_POOL_CHUNK_SIZE, /*chunk size*/
         16,                        /*alignment*/
         RG_BUFFER_USAGE_INDEX);
+
+    return cmd_buffer;
 }
 
 static void freeCmdBuffer(RgDevice *device, RgCmdBuffer *cmd_buffer)
@@ -3911,6 +3917,8 @@ static void freeCmdBuffer(RgDevice *device, RgCmdBuffer *cmd_buffer)
 
     vkFreeCommandBuffers(
         device->device, cmd_buffer->cmd_pool->command_pool, 1, &cmd_buffer->cmd_buffer);
+
+    free(cmd_buffer);
 }
 
 static void cmdBufferBindDescriptors(RgCmdBuffer *cmd_buffer)
@@ -4347,18 +4355,69 @@ static void rgResourceResolveImageInfo(
 static void
 rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_count)
 {
+    (void)graph;
     memset(node, 0, sizeof(*node));
-
-    bool is_last = node == &graph->nodes.ptr[graph->nodes.len - 1];
 
     node->num_pass_indices = pass_count;
     node->pass_indices = (uint32_t *)malloc(sizeof(*node->pass_indices) * pass_count);
     memcpy(node->pass_indices, pass_indices, sizeof(*node->pass_indices) * pass_count);
+}
+
+static void rgNodeDestroy(RgGraph *graph, RgNode *node)
+{
+    RgDevice *device = graph->device;
+    VK_CHECK(vkDeviceWaitIdle(device->device));
 
     assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
     {
-        allocateCmdBuffer(graph->device, graph->cmd_pool, &node->frames[i].cmd_buffer);
+        vkDestroySemaphore(
+            device->device, node->frames[i].execution_finished_semaphore, NULL);
+        node->frames[i].execution_finished_semaphore = VK_NULL_HANDLE;
+
+        vkDestroyFence(device->device, node->frames[i].fence, NULL);
+        node->frames[i].fence = VK_NULL_HANDLE;
+
+        freeCmdBuffer(device, node->frames[i].cmd_buffer);
+        node->frames[i].cmd_buffer = NULL;
+
+        arrFree(&node->frames[i].wait_semaphores);
+        arrFree(&node->frames[i].wait_stages);
+    }
+
+    free(node->pass_indices);
+}
+
+static void
+rgNodeResize(RgGraph *graph, RgNode *node)
+{
+    VK_CHECK(vkDeviceWaitIdle(graph->device->device));
+
+    bool is_last = node == &graph->nodes.ptr[graph->nodes.len - 1];
+
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
+    {
+        if (node->frames[i].cmd_buffer != NULL)
+        {
+            freeCmdBuffer(graph->device, node->frames[i].cmd_buffer);
+            node->frames[i].cmd_buffer = NULL;
+        }
+
+        if (node->frames[i].execution_finished_semaphore != VK_NULL_HANDLE)
+        {
+            vkDestroySemaphore(
+                graph->device->device, node->frames[i].execution_finished_semaphore, NULL);
+            node->frames[i].execution_finished_semaphore = VK_NULL_HANDLE;
+        }
+
+        if (node->frames[i].fence != VK_NULL_HANDLE)
+        {
+            vkDestroyFence(
+                graph->device->device, node->frames[i].fence, NULL);
+            node->frames[i].fence = VK_NULL_HANDLE;
+        }
+
+        node->frames[i].cmd_buffer = allocateCmdBuffer(graph->device, graph->cmd_pool);
 
         VkSemaphoreCreateInfo semaphore_info;
         memset(&semaphore_info, 0, sizeof(semaphore_info));
@@ -4376,56 +4435,18 @@ rgNodeInit(RgGraph *graph, RgNode *node, uint32_t *pass_indices, uint32_t pass_c
         VK_CHECK(vkCreateFence(
             graph->device->device, &fence_info, NULL, &node->frames[i].fence));
 
-        uint32_t num_wait_semaphores = 0;
-        VkSemaphore *wait_semaphores = NULL;
-        VkPipelineStageFlags *wait_stages = NULL;
+        arrFree(&node->frames[i].wait_semaphores);
+        arrFree(&node->frames[i].wait_stages);
+
+        memset(&node->frames[i].wait_semaphores, 0, sizeof(node->frames[i].wait_semaphores));
+        memset(&node->frames[i].wait_stages, 0, sizeof(node->frames[i].wait_stages));
 
         if (is_last && graph->has_swapchain)
         {
-            // Last node has to wait for the swapchain image to be available
-            num_wait_semaphores++;
+            arrPush(&node->frames[i].wait_semaphores, graph->image_available_semaphores[i]);
+            arrPush(&node->frames[i].wait_stages, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         }
-
-        if (num_wait_semaphores > 0)
-        {
-            wait_semaphores =
-                (VkSemaphore *)malloc(sizeof(*wait_semaphores) * num_wait_semaphores);
-            wait_stages =
-                (VkPipelineStageFlags *)malloc(sizeof(*wait_stages) * num_wait_semaphores);
-        }
-
-        if (is_last && graph->has_swapchain)
-        {
-            assert(num_wait_semaphores > 0);
-            wait_semaphores[num_wait_semaphores - 1] =
-                graph->image_available_semaphores[i];
-            wait_stages[num_wait_semaphores - 1] =
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        }
-
-        node->frames[i].num_wait_semaphores = num_wait_semaphores;
-        node->frames[i].wait_semaphores = wait_semaphores;
-        node->frames[i].wait_stages = wait_stages;
     }
-}
-
-static void rgNodeDestroy(RgGraph *graph, RgNode *node)
-{
-    RgDevice *device = graph->device;
-    VK_CHECK(vkDeviceWaitIdle(device->device));
-
-    assert(graph->num_frames > 0);
-    for (uint32_t i = 0; i < graph->num_frames; ++i)
-    {
-        vkDestroySemaphore(
-            device->device, node->frames[i].execution_finished_semaphore, NULL);
-
-        vkDestroyFence(device->device, node->frames[i].fence, NULL);
-
-        freeCmdBuffer(device, &node->frames[i].cmd_buffer);
-    }
-
-    free(node->pass_indices);
 }
 
 static uint64_t rgRenderpassHash(VkRenderPassCreateInfo *ci)
@@ -4736,7 +4757,6 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
         graph->device->device, &renderpass_ci, NULL, &pass->renderpass));
 
     pass->hash = rgRenderpassHash(&renderpass_ci);
-    printf("Render pass hash: %lu\n", pass->hash);
 
     assert(graph->num_frames > 0);
     for (uint32_t f = 0; f < graph->num_frames; ++f)
@@ -4762,6 +4782,9 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
                 case RG_RESOURCE_USAGE_DEPTH_STENCIL_ATTACHMENT:
                 {
                     arrPush(&views, resource->frames[f].image->view);
+
+                    assert(pass->extent.width == resource->frames[f].image->info.width);
+                    assert(pass->extent.height == resource->frames[f].image->info.height);
                     break;
                 }
                 default: break;
@@ -4859,7 +4882,7 @@ static void rgPassDestroy(RgGraph *graph, RgPass *pass)
     free(pass->clear_values);
 }
 
-static void resizeResource(RgGraph *graph, RgResource* resource)
+static void rgResourceResize(RgGraph *graph, RgResource* resource)
 {
     assert(graph->num_frames > 0);
     for (uint32_t i = 0; i < graph->num_frames; ++i)
@@ -4893,15 +4916,39 @@ static void resizeResource(RgGraph *graph, RgResource* resource)
 
 void rgGraphResize(RgGraph *graph, uint32_t width, uint32_t height)
 {
+    VK_CHECK(vkDeviceWaitIdle(graph->device->device));
+
+    for (uint32_t i = 0; i < graph->num_frames; ++i)
+    {
+        if (graph->image_available_semaphores[i] != VK_NULL_HANDLE)
+        {
+            vkDestroySemaphore(
+                graph->device->device, graph->image_available_semaphores[i], NULL);
+        }
+
+        VkSemaphoreCreateInfo semaphore_info;
+        memset(&semaphore_info, 0, sizeof(semaphore_info));
+        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VK_CHECK(vkCreateSemaphore(
+            graph->device->device,
+            &semaphore_info,
+            NULL,
+            &graph->image_available_semaphores[i]));
+    }
+
     if (graph->has_swapchain)
     {
         rgSwapchainResize(&graph->swapchain, width, height);
     }
 
+    for (uint32_t i = 0; i < graph->nodes.len; ++i)
+    {
+        rgNodeResize(graph, &graph->nodes.ptr[i]);
+    }
+
     for (uint32_t i = 0; i < graph->resources.len; ++i)
     {
-        RgResource *resource = &graph->resources.ptr[i];
-        resizeResource(graph, resource);
+        rgResourceResize(graph, &graph->resources.ptr[i]);
     }
 
     for (uint32_t i = 0; i < graph->passes.len; ++i)
@@ -5125,18 +5172,6 @@ void rgGraphBuild(
         graph->num_frames = RG_FRAMES_IN_FLIGHT;
     }
 
-    for (uint32_t i = 0; i < graph->num_frames; ++i)
-    {
-        VkSemaphoreCreateInfo semaphore_info;
-        memset(&semaphore_info, 0, sizeof(semaphore_info));
-        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        VK_CHECK(vkCreateSemaphore(
-            graph->device->device,
-            &semaphore_info,
-            NULL,
-            &graph->image_available_semaphores[i]));
-    }
-
     assert(graph->passes.len > 0);
     assert(graph->nodes.len == 0);
 
@@ -5320,7 +5355,7 @@ RgCmdBuffer *rgGraphBeginPass(RgGraph *graph, RgPassRef pass_ref)
     RgNode *node = &graph->nodes.ptr[pass->node_index];
 
     uint32_t current_frame = graph->current_frame;
-    RgCmdBuffer *cmd_buffer = &node->frames[current_frame].cmd_buffer;
+    RgCmdBuffer *cmd_buffer = node->frames[current_frame].cmd_buffer;
 
     uint32_t first_pass_index = node->pass_indices[0];
 
@@ -5526,7 +5561,7 @@ void rgGraphEndPass(RgGraph *graph, RgPassRef pass_ref)
     RgNode *node = &graph->nodes.ptr[pass->node_index];
 
     uint32_t current_frame = graph->current_frame;
-    RgCmdBuffer *cmd_buffer = &node->frames[current_frame].cmd_buffer;
+    RgCmdBuffer *cmd_buffer = node->frames[current_frame].cmd_buffer;
 
     if (pass->type == RG_PASS_TYPE_GRAPHICS)
     {
@@ -5549,9 +5584,9 @@ void rgGraphEndPass(RgGraph *graph, RgPassRef pass_ref)
         VkSubmitInfo submit;
         memset(&submit, 0, sizeof(submit));
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.waitSemaphoreCount = node->frames[current_frame].num_wait_semaphores;
-        submit.pWaitSemaphores = node->frames[current_frame].wait_semaphores;
-        submit.pWaitDstStageMask = node->frames[current_frame].wait_stages;
+        submit.waitSemaphoreCount = node->frames[current_frame].wait_semaphores.len;
+        submit.pWaitSemaphores = node->frames[current_frame].wait_semaphores.ptr;
+        submit.pWaitDstStageMask = node->frames[current_frame].wait_stages.ptr;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd_buffer->cmd_buffer;
         if (pass->is_backbuffer)
@@ -5577,12 +5612,12 @@ void rgGraphWaitAll(RgGraph *graph)
     for (uint32_t i = 0; i < graph->nodes.len; ++i)
     {
         RgNode *node = &graph->nodes.ptr[i];
-        vkWaitForFences(
+        VK_CHECK(vkWaitForFences(
             graph->device->device,
             1,
             &node->frames[graph->current_frame].fence,
             VK_TRUE,
-            UINT64_MAX);
+            UINT64_MAX));
     }
 }
 
