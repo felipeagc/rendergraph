@@ -5312,6 +5312,7 @@ RgResult rgGraphBeginFrame(RgGraph *graph, uint32_t width, uint32_t height)
     if ((res == VK_ERROR_OUT_OF_DATE_KHR) || (res == VK_SUBOPTIMAL_KHR))
     {
         rgGraphResize(graph, width, height);
+        return RG_RESIZE_NEEDED;
     }
     else
     {
