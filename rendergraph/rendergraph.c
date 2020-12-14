@@ -2098,26 +2098,13 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
 {
     VK_CHECK(vkDeviceWaitIdle(swapchain->device->device));
 
-    // Destroy old stuff first
-    {
-        for (uint32_t i = 0; i < swapchain->num_images; ++i)
-        {
-            vkDestroyImageView(
-                swapchain->device->device, swapchain->image_views[i], NULL);
-            swapchain->image_views[i] = VK_NULL_HANDLE;
-        }
+    VkSwapchainKHR old_swapchain = swapchain->swapchain;
+    uint32_t old_num_images = swapchain->num_images;
+    VkImageView *old_image_views = swapchain->image_views;
 
-        if (swapchain->swapchain != VK_NULL_HANDLE)
-        {
-            vkDestroySwapchainKHR(swapchain->device->device, swapchain->swapchain, NULL);
-            swapchain->swapchain = VK_NULL_HANDLE;
-        }
-    }
-
-    // Get capabilities
-    VkSurfaceCapabilitiesKHR capabilities = {0};
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-        swapchain->device->physical_device, swapchain->surface, &capabilities);
+    swapchain->swapchain = VK_NULL_HANDLE;
+    swapchain->num_images = 0;
+    swapchain->image_views = NULL;
 
     // Get format
     VkSurfaceFormatKHR surface_format;
@@ -2186,34 +2173,61 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
 
         for (uint32_t i = 0; i < num_present_modes; ++i)
         {
-            if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            if (present_modes[i] == VK_PRESENT_MODE_FIFO_KHR)
+            {
                 present_mode = present_modes[i];
-        }
+                break;
+            }
 
-        for (uint32_t i = 0; i < num_present_modes; ++i)
-        {
             if (present_modes[i] == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+            {
                 present_mode = present_modes[i];
-        }
+                break;
+            }
 
-        for (uint32_t i = 0; i < num_present_modes; ++i)
-        {
             if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            {
                 present_mode = present_modes[i];
+                break;
+            }
+
+            if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            {
+                present_mode = present_modes[i];
+                break;
+            }
         }
 
         free(present_modes);
     }
 
-    width = RG_CLAMP(
-        width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-    height = RG_CLAMP(
-        height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-    swapchain->extent = (VkExtent2D){width, height};
+    // Get capabilities
+    VkSurfaceCapabilitiesKHR surface_capabilities = {0};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        swapchain->device->physical_device, swapchain->surface, &surface_capabilities);
+
+    if (surface_capabilities.currentExtent.width == (uint32_t)-1)
+    {
+        // If the surface size is undefined, the size is set to
+        // the size of the images requested.
+        swapchain->extent.width = RG_CLAMP(
+            width,
+            surface_capabilities.minImageExtent.width,
+            surface_capabilities.maxImageExtent.width);
+        swapchain->extent.height = RG_CLAMP(
+            height,
+            surface_capabilities.minImageExtent.height,
+            surface_capabilities.maxImageExtent.height);
+    }
+    else
+    {
+        // If the surface size is defined, the swap chain size must match
+        swapchain->extent = surface_capabilities.currentExtent;
+    }
 
     VkImageUsageFlags image_usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (!(capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+    if (!(surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
     {
         fprintf(
             stderr,
@@ -2226,39 +2240,19 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
     memset(&create_info, 0, sizeof(create_info));
     create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     create_info.surface = swapchain->surface;
-    create_info.minImageCount = RG_CLAMP(2, capabilities.minImageCount, capabilities.maxImageCount);
+    create_info.minImageCount = RG_CLAMP(2, surface_capabilities.minImageCount, surface_capabilities.maxImageCount);
     create_info.imageFormat = surface_format.format;
     create_info.imageColorSpace = surface_format.colorSpace;
     create_info.imageExtent = swapchain->extent;
     create_info.imageArrayLayers = 1;
     create_info.imageUsage = image_usage;
-
-    uint32_t queue_family_indices[2] = {
-        swapchain->device->queue_family_indices.graphics,
-        swapchain->present_family_index,
-    };
-
-    if (swapchain->device->queue_family_indices.graphics !=
-        swapchain->present_family_index)
-    {
-        create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-        create_info.queueFamilyIndexCount = 2;
-        create_info.pQueueFamilyIndices = queue_family_indices;
-    }
-    else
-    {
-        create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        create_info.queueFamilyIndexCount = 0;
-        create_info.pQueueFamilyIndices = NULL;
-    }
-
-    create_info.preTransform = capabilities.currentTransform;
+    create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create_info.queueFamilyIndexCount = 0;
+    create_info.pQueueFamilyIndices = NULL;
+    create_info.preTransform = surface_capabilities.currentTransform;
     create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-
     create_info.presentMode = present_mode;
     create_info.clipped = VK_TRUE;
-
-    VkSwapchainKHR old_swapchain = swapchain->swapchain;
     create_info.oldSwapchain = old_swapchain;
 
     VK_CHECK(vkCreateSwapchainKHR(
@@ -2299,6 +2293,22 @@ static void rgSwapchainResize(RgSwapchain *swapchain, uint32_t width, uint32_t h
             &view_create_info,
             NULL,
             &swapchain->image_views[i]));
+    }
+
+    // Destroy old stuff
+    if (old_image_views)
+    {
+        for (uint32_t i = 0; i < old_num_images; ++i)
+        {
+            vkDestroyImageView(
+                swapchain->device->device, old_image_views[i], NULL);
+        }
+        free(old_image_views);
+    }
+
+    if (old_swapchain != VK_NULL_HANDLE)
+    {
+        vkDestroySwapchainKHR(swapchain->device->device, old_swapchain, NULL);
     }
 }
 // }}}
@@ -2344,12 +2354,8 @@ RgBuffer *rgBufferCreate(RgDevice *device, RgBufferInfo *info)
 
     switch (buffer->info.memory)
     {
-    case RG_BUFFER_MEMORY_HOST:
-        alloc_info.type = RG_ALLOCATION_TYPE_CPU_TO_GPU;
-        break;
-    case RG_BUFFER_MEMORY_DEVICE:
-        alloc_info.type = RG_ALLOCATION_TYPE_GPU_ONLY;
-        break;
+    case RG_BUFFER_MEMORY_HOST: alloc_info.type = RG_ALLOCATION_TYPE_CPU_TO_GPU; break;
+    case RG_BUFFER_MEMORY_DEVICE: alloc_info.type = RG_ALLOCATION_TYPE_GPU_ONLY; break;
     }
 
     alloc_info.dedicated = true;
@@ -4734,6 +4740,8 @@ static void rgPassResize(RgGraph *graph, RgPass *pass)
     }
     else
     {
+        // If this renderpass is not the last one, it means that its results
+        // are going to be read from a subsequent renderpass
         dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
         dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
